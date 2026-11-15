@@ -15,9 +15,10 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "VeTay"
-VERSION_FILE = ROOT / "version.txt"
-VERSION = VERSION_FILE.read_text().strip() if VERSION_FILE.is_file() else "0.2.0"
-RELEASE_API = "https://api.github.com/repos/taikhoanzaizai-ux/vetay/releases/latest"
+VERSION = "0.2.7"
+PATCH_ABI = "vetay-windows-026"
+PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
+
 if (ROOT / "ffmpeg.exe").is_file():
     os.environ["FFMPEG_BINARY"] = str(ROOT / "ffmpeg.exe")
 LOCK = threading.Lock()
@@ -221,52 +222,64 @@ def render_folder(voice, pictures, plan, destination, report, ratio="9:16"):
         os.replace(output, destination)
     return str(destination)
 
+def patch_read(url, limit):
+    request = urllib.request.Request(url, headers={"User-Agent": "VeTay-Windows", "Cache-Control": "no-cache"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        data = response.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("Gói cập nhật vượt kích thước cho phép.")
+    return data
+
+def version_tuple(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\d+\.\d+\.\d+", value):
+        raise ValueError("Số phiên bản không hợp lệ.")
+    return tuple(map(int, value.split(".")))
+
 def update():
     if not LOCK.acquire(blocking=False):
         return "Đợi video xuất xong trước khi cập nhật."
+    restart = False
     try:
-        request = urllib.request.Request(RELEASE_API, headers={"User-Agent": "VeTay-Windows"})
-        with urllib.request.urlopen(request, timeout=20) as response:
-            release = json.load(response)
-        def triplet(value):
-            if not re.fullmatch(r"v?\d+\.\d+\.\d+", value):
-                raise ValueError("Phiên bản GitHub không hợp lệ.")
-            return tuple(map(int, value.lstrip("v").split(".")))
-        tag = release["tag_name"]
-        if triplet(tag) <= triplet(VERSION):
+        manifest = json.loads(patch_read(PATCH_ROOT + "main/update.json", 16384))
+        version = manifest["version"]
+        if version_tuple(version) <= version_tuple(VERSION):
             return f"Đã ở bản mới nhất ({VERSION})."
-        asset = next(item for item in release["assets"] if item["name"] == "VeTay-Windows-Setup.exe")
-        checksum = asset.get("digest", "")
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", checksum):
-            raise RuntimeError("GitHub chưa cung cấp mã kiểm tra của bộ cài.")
-        url = asset["browser_download_url"]
-        expected_url = f"https://github.com/taikhoanzaizai-ux/vetay/releases/download/{tag}/VeTay-Windows-Setup.exe"
-        if url != expected_url:
-            raise RuntimeError("Đường dẫn bộ cài không đúng repo.")
-        stage = Path(tempfile.mkdtemp(prefix="update-", dir=DATA))
-        exe = stage / asset["name"]
-        try:
-            digest = hashlib.sha256()
-            with urllib.request.urlopen(url, timeout=35) as response, exe.open("wb") as handle:
-                total = 0
-                while chunk := response.read(1024 * 1024):
-                    total += len(chunk)
-                    if total > asset["size"]:
-                        raise RuntimeError("Kích thước bộ cài không hợp lệ.")
-                    digest.update(chunk)
-                    handle.write(chunk)
-            if total != asset["size"] or f"sha256:{digest.hexdigest()}" != checksum:
-                raise RuntimeError("Bộ cài tải về không qua kiểm tra SHA-256.")
-            subprocess.Popen([str(exe), "/CLOSEAPPLICATIONS", "/RESTARTVETAY", f"/DIR={ROOT}"], cwd=stage)
-        except Exception:
-            shutil.rmtree(stage, ignore_errors=True)
-            raise
-        threading.Timer(2, lambda: os._exit(0)).start()
-        return f"Đã tải {tag}. Tiếp tục trong cửa sổ cài đặt."
+        if manifest["abi"] != PATCH_ABI:
+            return "Bản này cần nâng cấp thư viện. Tải bộ cài tại trang GitHub Releases."
+        revision = manifest["commit"]
+        expected = manifest["git_blob"]
+        if not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value)
+                   for value in (revision, expected)):
+            raise ValueError("Mã kiểm tra gói cập nhật không hợp lệ.")
+        payload = patch_read(PATCH_ROOT + revision + "/app.py", 1024 * 1024)
+        actual = hashlib.sha1(f"blob {len(payload)}\0".encode() + payload).hexdigest()
+        if actual != expected:
+            raise ValueError("Gói tải về không khớp mã kiểm tra GitHub.")
+        source = payload.decode("utf-8")
+        if f'VERSION = "{version}"' not in source.splitlines():
+            raise ValueError("Phiên bản trong gói cập nhật không khớp.")
+        target = ROOT / "app.py"
+        compile(source, str(target), "exec")
+        with tempfile.TemporaryDirectory(prefix="vetay-patch-", dir=ROOT) as folder:
+            pending = Path(folder) / "app.py"
+            pending.write_bytes(payload)
+            backup = Path(folder) / "previous.py"
+            shutil.copyfile(target, backup)
+            os.replace(pending, target)
+            try:
+                subprocess.Popen([sys.executable, str(target)], cwd=ROOT)
+            except OSError:
+                os.replace(backup, target)
+                raise
+        restart = True
+        threading.Timer(1.5, lambda: os._exit(0)).start()
+        return f"Đã cập nhật nhẹ lên {version}. Đang mở lại Vẽ Tay…"
     except Exception as error:
         return f"Cập nhật thất bại: {error}"
     finally:
-        LOCK.release()
+        if not restart:
+            LOCK.release()
+
 
 def ui(check=False):
     import gradio as gr
