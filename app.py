@@ -1,5 +1,9 @@
 from pathlib import Path
 import argparse
+import hashlib
+import json
+import sys
+import urllib.request
 import asyncio
 import os
 import re
@@ -11,14 +15,17 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "VeTay"
-UPSTREAM = "https://github.com/taikhoanzaizai-ux/vetay.git"
+VERSION_FILE = ROOT / "version.txt"
+VERSION = VERSION_FILE.read_text().strip() if VERSION_FILE.is_file() else "0.2.0"
+RELEASE_API = "https://api.github.com/repos/taikhoanzaizai-ux/vetay/releases/latest"
+if (ROOT / "ffmpeg.exe").is_file():
+    os.environ["FFMPEG_BINARY"] = str(ROOT / "ffmpeg.exe")
 LOCK = threading.Lock()
 
 def engine():
-    import sys
-    path = Path(os.environ.get("VETAY_ENGINE", str(Path.home() / "Downloads" / "whiteboard-animation-vi-main")))
+    path = ROOT / "engine"
     if not (path / "handdraw" / "render.py").is_file():
-        raise RuntimeError("Kh�ng t�m th?y Whiteboard Animation VI. Ch?n thu m?c qua VETAY_ENGINE.")
+        raise RuntimeError("B? render Whiteboard Animation VI b? thi?u trong b?n c�i.")
     sys.path.insert(0, str(path))
     from handdraw.render import render_video
     from handdraw.settings import Settings
@@ -133,28 +140,51 @@ def render_folder(voice, pictures, plan, destination, report):
 def update():
     if not LOCK.acquire(blocking=False):
         return "D?i video xu?t xong tru?c khi c?p nh?t."
-    def git(*args):
-        return subprocess.check_output(["git", "-C", str(ROOT), *args], text=True,
-                                       stderr=subprocess.STDOUT, timeout=90).strip()
     try:
-        if git("remote", "get-url", "origin").removesuffix(".git") != UPSTREAM.removesuffix(".git"):
-            raise RuntimeError("Repo c�i d?t kh�ng tr? d?n GitHub vetay.")
-        if git("branch", "--show-current") != "main" or git("status", "--porcelain"):
-            raise RuntimeError("B?n c�i c� thay d?i c?c b? ho?c kh�ng ? nh�nh main.")
-        before = git("rev-parse", "HEAD")
-        git("fetch", "origin", "main")
-        git("merge", "--ff-only", "FETCH_HEAD")
-        after = git("rev-parse", "HEAD")
-        if before == after:
-            return f"Da ? b?n m?i nh?t ({after[:8]})."
-        threading.Timer(2, lambda: os._exit(42)).start()
-        return f"Da c?p nh?t {after[:8]}. Dang kh?i d?ng l?i."
+        request = urllib.request.Request(RELEASE_API, headers={"User-Agent": "VeTay-Windows"})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            release = json.load(response)
+        def triplet(value):
+            if not re.fullmatch(r"v?\d+\.\d+\.\d+", value):
+                raise ValueError("Phi�n b?n GitHub kh�ng h?p l?.")
+            return tuple(map(int, value.lstrip("v").split(".")))
+        tag = release["tag_name"]
+        if triplet(tag) <= triplet(VERSION):
+            return f"Da ? b?n m?i nh?t ({VERSION})."
+        asset = next(item for item in release["assets"] if item["name"] == "VeTay-Windows-Setup.exe")
+        checksum = asset.get("digest", "")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", checksum):
+            raise RuntimeError("GitHub chua cung c?p ma ki?m tra c?a b? c�i.")
+        url = asset["browser_download_url"]
+        expected_url = f"https://github.com/taikhoanzaizai-ux/vetay/releases/download/{tag}/VeTay-Windows-Setup.exe"
+        if url != expected_url:
+            raise RuntimeError("Du?ng d?n b? c�i kh�ng d�ng repo.")
+        stage = Path(tempfile.mkdtemp(prefix="update-", dir=DATA))
+        exe = stage / asset["name"]
+        try:
+            digest = hashlib.sha256()
+            with urllib.request.urlopen(url, timeout=35) as response, exe.open("wb") as handle:
+                total = 0
+                while chunk := response.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > asset["size"]:
+                        raise RuntimeError("K�ch thu?c b? c�i kh�ng h?p l?.")
+                    digest.update(chunk)
+                    handle.write(chunk)
+            if total != asset["size"] or f"sha256:{digest.hexdigest()}" != checksum:
+                raise RuntimeError("B? c�i t?i v? kh�ng qua ki?m tra SHA-256.")
+            subprocess.Popen([str(exe), "/CLOSEAPPLICATIONS"], cwd=stage)
+        except Exception:
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
+        threading.Timer(2, lambda: os._exit(0)).start()
+        return f"Da t?i {tag}. Ti?p t?c trong c?a s? c�i d?t."
     except Exception as error:
-        return f"C?p nh?t th?t b?i: {getattr(error, 'output', None) or error}"
+        return f"C?p nh?t th?t b?i: {error}"
     finally:
         LOCK.release()
 
-def ui():
+def ui(check=False):
     import gradio as gr
     DATA.mkdir(parents=True, exist_ok=True)
     def run(script, voice, pictures, provider, url, model, maximum, progress=gr.Progress()):
@@ -203,16 +233,28 @@ def ui():
         status = gr.Textbox(label="C?p nh?t", interactive=False)
         gr.Button("C?p nh?t qua GitHub").click(update, outputs=status)
         generate.click(run, [script, voice, pictures, provider, url, model, maximum], video)
-    app.queue(default_concurrency_limit=1).launch(server_name="127.0.0.1", server_port=7871,
-                                                    inbrowser=True, share=False, allowed_paths=[str(DATA)])
+    if check:
+        engine()
+        print(f"VeTay {VERSION}: {len(app.config['components'])} controls.")
+        return
+    import webview
+    _, local_url, _ = app.queue(default_concurrency_limit=1).launch(
+        server_name="127.0.0.1", prevent_thread_lock=True, inbrowser=False,
+        share=False, allowed_paths=[str(DATA)], quiet=True)
+    try:
+        webview.create_window("V? Tay", local_url, width=1080, height=900, min_size=(740, 620))
+        webview.start(gui="edgechromium")
+    finally:
+        app.close()
 
 if __name__ == "__main__":
     cli = argparse.ArgumentParser()
     cli.add_argument("--smoke", nargs=3, metavar=("VOICE", "IMAGE", "OUTPUT"))
+    cli.add_argument("--check", action="store_true")
     args = cli.parse_args()
     if args.smoke:
         voice, image, out = map(lambda item: Path(item).resolve(), args.smoke)
         render_folder(voice, [image], [(0, 48, "Smoke test")], out, print)
     else:
-        ui()
+        ui(check=args.check)
 
