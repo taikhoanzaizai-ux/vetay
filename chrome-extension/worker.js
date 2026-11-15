@@ -44,3 +44,32 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
   return true;
 });
 chrome.tabs.onRemoved.addListener(tabId => chrome.storage.session.remove("pairing:" + tabId));
+
+const extensionCheck = "vetay-check-local-update";
+function registerCheck() {
+  chrome.alarms.create(extensionCheck, {periodInMinutes:1});
+}
+chrome.runtime.onInstalled.addListener(registerCheck);
+chrome.runtime.onStartup.addListener(registerCheck);
+chrome.alarms.onAlarm.addListener(async alarm => {
+  if (alarm.name !== extensionCheck) return;
+  try {
+    const current = chrome.runtime.getManifest();
+    const response = await fetch(chrome.runtime.getURL("manifest.json") + "?t=" + Date.now(), {cache:"no-store"});
+    if (!response.ok) return;
+    const disk = await response.json();
+    if (!/^\d+\.\d+\.\d+$/.test(disk.version) || disk.name !== current.name ||
+        disk.manifest_version !== current.manifest_version) return;
+    const old = current.version.split(".").map(Number);
+    const next = disk.version.split(".").map(Number);
+    const changed = next.findIndex((value,i)=>value!==old[i]);
+    if (changed < 0 || next[changed] < old[changed]) return;
+    for(const key of ["permissions","host_permissions","optional_permissions","optional_host_permissions"]) {
+      if(JSON.stringify([...(current[key]||[])].sort())!==JSON.stringify([...(disk[key]||[])].sort())) return;
+    }
+    const matches = value => (value.content_scripts || []).flatMap(script=>script.matches || []).sort();
+    if(JSON.stringify(matches(current))!==JSON.stringify(matches(disk))) return;
+    const idle = await fetch(base+"/extension-idle",{cache:"no-store"});
+    if(idle.ok && (await idle.json()).idle === true) chrome.runtime.reload();
+  } catch {}
+});
