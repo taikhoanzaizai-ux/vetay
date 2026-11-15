@@ -16,7 +16,7 @@
       const url = new URL(src, location.href);
       const media = /^(Ô hiển thị hình ảnh của người dùng|User image tile)$/iu.test(img.alt.trim());
       const original = /^(blob:|https:\/\/[^/]*\.googleusercontent\.com\/)/i.test(src);
-      return original || (media && (url.origin === location.origin || url.protocol === "data:"));
+      return original || (media && ["https:", "data:", "blob:"].includes(url.protocol));
     });
   }
   const caption = button => (button.getAttribute("aria-label") || button.getAttribute("title") || button.textContent || "").trim();
@@ -74,6 +74,8 @@
     const results = [];
     const cards = () => [...document.querySelectorAll('[role="group"][aria-label]')];
     const normalize = text => (text || "").replace(/\s+/gu, " ").trim();
+    const initialCards = cards();
+    let newestFirst = true;
     for (const [offset, prompt] of batch.prompts.entries()) {
       const job = {job:batch.job, index:batch.index + offset, prompt};
       const agent = [...document.querySelectorAll('[role="checkbox"],input[type="checkbox"]')].find(node => visible(node)
@@ -142,13 +144,20 @@
       };
       const card = await waitFor(findCard, 20);
       if (!card) throw Error("Flow chưa xác nhận đã nhận prompt cảnh " + (job.index + 1) + ".");
+      const currentCards = cards();
+      newestFirst &&= currentCards.length === initialCards.length + queued.length + 1
+        && currentCards[0] === card;
       queued.push({job, card, findCard});
       await send({op:"progress", count:queued.length, stage:"submitted"});
     }
     const claimed = new Set();
     for (const {job, card, findCard} of queued) {
       const result = await waitFor(() => {
-        const current = (card.isConnected && resultImages(card).length ? card : findCard()) || (card.isConnected ? card : null);
+        const grid = cards();
+        const replacement = newestFirst && initialCards.length === 0 && grid.length === queued.length
+          && grid.every(item => resultImages(item).length === 1)
+          ? grid[queued.length - 1 - queued.findIndex(entry => entry.card === card)] : null;
+        const current = (card.isConnected && resultImages(card).length ? card : findCard()) || replacement;
         if (!current || claimed.has(current)) return null;
         const urls = [...new Set(resultImages(current).map(image => image.currentSrc || image.src))];
         if (urls.length !== 1) return null;
