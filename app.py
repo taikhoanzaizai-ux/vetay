@@ -11,11 +11,12 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.16"
+VERSION = "0.2.17"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -273,13 +274,16 @@ def prepare_chrome_bundle():
         LOCK.release()
 
 def refresh_existing_extension():
-    if not (DATA / "chrome-extension" / "manifest.json").is_file():
-        return
-    with LOCK:
-        try:
-            sync_chrome_bundle()
-        except (OSError, ValueError, KeyError):
-            pass
+    while True:
+        if (DATA / "chrome-extension" / "manifest.json").is_file() and LOCK.acquire(blocking=False):
+            try:
+                sync_chrome_bundle()
+            except (OSError, ValueError, KeyError):
+                pass
+            finally:
+                LOCK.release()
+        time.sleep(60)
+
 
 def update():
     if not LOCK.acquire(blocking=False):
