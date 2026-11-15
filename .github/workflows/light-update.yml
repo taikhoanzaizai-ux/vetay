@@ -1,0 +1,39 @@
+name: Windows lightweight update
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/light-update.yml']
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Stage only changed application files
+        shell: pwsh
+        run: |
+          python -c "import json,hashlib,subprocess; from pathlib import Path; m=json.loads(Path('update.json').read_text()); assert m['version']=='0.2.7'; b=subprocess.check_output(['git','show',m['commit']+':app.py']); assert hashlib.sha1(f'blob {len(b)}'.encode()+bytes(1)+b).hexdigest()==m['git_blob']; compile(b,'app.py','exec'); dst=Path('patch_payload'); dst.mkdir(exist_ok=True); (dst/'app.py').write_bytes(b); (dst/'version.txt').write_text(m['version']+chr(10),encoding='ascii')"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Compile update
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" patch.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ((Get-Item dist/VeTay-Windows-Setup.exe).Length -gt 10MB) { throw 'Patch is unexpectedly large' }
+      - name: Publish update
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.2.7 dist/VeTay-Windows-Setup.exe --target $env:GITHUB_SHA --title "Ve Tay 0.2.7 - Lightweight update" --notes "Small upgrade only for existing installations of Ve Tay 0.2.6. Reuses the installed engine, Python, FFmpeg and model." --latest
+          exit $LASTEXITCODE
