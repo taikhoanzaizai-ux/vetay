@@ -25,12 +25,40 @@
     if (matches.length === 1) return matches[0];
     return eligible.length === 1 ? eligible[0] : null;
   }
+  const ratioLabel = ratio => new RegExp("(?:^|[^0-9])" + ratio.replace(":", "\\s*[:∶]\\s*") + "(?![0-9])", "u");
+  async function selectRatio(ratio) {
+    const selected = node => ["aria-checked", "aria-selected", "aria-pressed"].some(key => node.getAttribute(key) === "true")
+      || node.getAttribute("data-state") === "checked" || node.getAttribute("data-state") === "active";
+    const controls = () => [...document.querySelectorAll("button,[role=button],[role=radio],[role=option],[role=menuitemradio],[role=tab]")]
+      .filter(node => visible(node) && !node.disabled && node.getAttribute("aria-disabled") !== "true");
+    const labels = node => [caption(node), node.getAttribute("data-value") || "", node.innerText || ""].join(" ");
+    const exact = ratioLabel(ratio);
+    const hasRatio = ratioLabel("[0-9]+:[0-9]+");
+    const trigger = controls().filter(node => /aspect ratio|tỷ lệ|tỉ lệ|crop_(?:landscape|portrait)/iu.test(labels(node))
+      || (node.getAttribute("aria-haspopup") && hasRatio.test(labels(node))));
+    const options = () => controls().filter(node => !trigger.includes(node) && exact.test(labels(node)));
+    if (options().some(selected)) return;
+    if (!options().length && trigger.length === 1) trigger[0].click();
+    const option = await waitFor(() => {
+      if (trigger.length === 1 && exact.test(labels(trigger[0])) && !options().length) return trigger[0];
+      const matches = options();
+      return matches.length === 1 ? matches[0] : null;
+    }, 5);
+    if (!option) throw Error("Không tìm thấy tỷ lệ " + ratio + " trong Google Flow.");
+    if (!trigger.includes(option) && !selected(option)) option.click();
+  }
   async function run() {
+    let appliedRatio;
     while (true) {
       const job = await send({op:"next"});
       if (job.done) return;
       const field = await waitFor(promptField, 25);
       if (!field) throw Error("Không xác định được ô prompt duy nhất. Mở trang tạo ảnh trong dự án Flow.");
+      const ratio = /^Tạo một ảnh minh họa tỷ lệ (\d+:\d+) /u.exec(job.prompt)?.[1];
+      if (ratio && ratio !== appliedRatio) {
+        await selectRatio(ratio);
+        appliedRatio = ratio;
+      }
       field.focus();
       if (field instanceof HTMLTextAreaElement) {
         Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(field,job.prompt);
