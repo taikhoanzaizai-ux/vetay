@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.30"
+VERSION = "0.2.31"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -562,13 +562,52 @@ def ui(check=False):
     import gradio as gr
     bridge = ChromeFlowBridge()
     chrome_server = None
-    def run(script, voice, pictures, provider, ratio, highlights, render, progress=gr.Progress()):
+    def choose_output_folder(current):
+        command = r"""
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+Add-Type -AssemblyName System.Windows.Forms
+$picker = New-Object System.Windows.Forms.FolderBrowserDialog
+$picker.Description = 'Ve Tay - MP4'
+$picker.SelectedPath = $env:VETAY_OUTPUT_PICKER
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+try {
+    if ($picker.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+        [Console]::Write($picker.SelectedPath)
+    }
+} finally { $picker.Dispose(); $owner.Dispose() }
+"""
+        env = dict(os.environ, VETAY_OUTPUT_PICKER=current or str(DATA))
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-STA", "-Command", command],
+                env=env, capture_output=True, check=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise gr.Error("Không mở được hộp chọn thư mục. Bạn có thể nhập đường dẫn trực tiếp.") from error
+        return result.stdout.decode("utf-8").strip() or current
+
+    def open_output_folder(current):
+        folder = Path((current or "").strip().strip('"') or DATA).expanduser()
+        if not folder.is_absolute() or not folder.is_dir():
+            raise gr.Error("Thư mục lưu video chưa tồn tại.")
+        os.startfile(str(folder))
+
+    def run(script, voice, pictures, provider, ratio, highlights, render, output_folder=None, progress=gr.Progress()):
         def report(message):
             progress(None, desc=message)
         if not LOCK.acquire(blocking=False):
             raise gr.Error("Một tác vụ đang chạy.")
         rows = []
         try:
+            save_folder = Path((output_folder or "").strip().strip('"') or DATA).expanduser()
+            if render:
+                if not save_folder.is_absolute() or not save_folder.is_dir():
+                    raise ValueError("Chọn một thư mục lưu video đã tồn tại.")
+                save_folder = save_folder.resolve()
+                with tempfile.TemporaryFile(dir=save_folder):
+                    pass
             with tempfile.TemporaryDirectory(prefix="input-", dir=DATA) as folder:
                 folder = Path(folder)
                 fingerprint = hashlib.sha256()
@@ -604,7 +643,17 @@ def ui(check=False):
                     raise ValueError("Chọn ảnh theo thứ tự cảnh hoặc chọn Google Flow.")
                 dest = DATA / f"VeTay-{uuid.uuid4().hex[:8]}.mp4"
                 path = render_folder(wav, pictures, plan, dest, report, ratio, highlights)
-                yield rows, path, f"Đã xuất MP4 · {len(rows)} cảnh."
+                saved = save_folder / dest.name
+                if saved != dest:
+                    try:
+                        with tempfile.TemporaryDirectory(prefix="vetay-export-", dir=save_folder) as staging:
+                            copy = Path(staging) / dest.name
+                            shutil.copyfile(dest, copy)
+                            os.replace(copy, saved)
+                    except OSError as error:
+                        yield rows, path, f"Đã dựng MP4 tại {dest}. Không lưu được sang {save_folder}: {error}"
+                        return
+                yield rows, path, f"Đã lưu MP4 · {len(rows)} cảnh · {saved}"
         except subprocess.CalledProcessError as error:
             detail = (error.stderr or b"").decode("utf-8", errors="replace").strip()
             yield rows, None, "Lỗi xử lý âm thanh hoặc video: " + detail[-1500:]
@@ -616,8 +665,8 @@ def ui(check=False):
     def analyze(script, voice, ratio, highlights):
         yield from run(script, voice, None, None, ratio, highlights, False)
 
-    def generate_video(script, voice, pictures, provider, ratio, highlights):
-        yield from run(script, voice, pictures, provider, ratio, highlights, True)
+    def generate_video(script, voice, pictures, provider, ratio, highlights, output_folder):
+        yield from run(script, voice, pictures, provider, ratio, highlights, True, output_folder)
 
     css = "body, .gradio-container, button, textarea, input { font-family: 'Segoe UI', Arial, sans-serif !important; }"
     with gr.Blocks(title="Vẽ Tay") as app:
@@ -645,11 +694,17 @@ def ui(check=False):
                              label="Bảng phân cảnh theo lời đọc", wrap=True, interactive=False)
         task = gr.Textbox(label="Tiến độ dựng", interactive=False)
         video = gr.Video(label="Video MP4")
+        with gr.Row():
+            output_folder = gr.Textbox(value=str(DATA), label="Thư mục lưu MP4")
+            choose_folder = gr.Button("Chọn thư mục")
+            open_folder = gr.Button("Mở thư mục lưu")
+        choose_folder.click(choose_output_folder, [output_folder], [output_folder], queue=False)
+        open_folder.click(open_output_folder, [output_folder], None, queue=False)
         status = gr.Textbox(label="Trạng thái cập nhật", interactive=False)
         gr.Button("Chuẩn bị tiện ích Chrome").click(prepare_chrome_bundle, outputs=status)
         gr.Button("Cập nhật qua GitHub").click(update, outputs=status)
         analysis.click(analyze, [script, voice, ratio, highlights], [table, video, task])
-        generate.click(generate_video, [script, voice, pictures, provider, ratio, highlights], [table, video, task])
+        generate.click(generate_video, [script, voice, pictures, provider, ratio, highlights, output_folder], [table, video, task])
     if check:
         engine()
         print(f"VeTay {VERSION}: {len(app.config['components'])} controls.")
