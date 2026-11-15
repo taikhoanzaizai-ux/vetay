@@ -26,6 +26,7 @@ Expand-Archive -LiteralPath $ffmpeg -DestinationPath $expanded
 $ffmpegDir = Get-ChildItem -LiteralPath $expanded -Directory | Select-Object -First 1
 Copy-Item -LiteralPath (Join-Path $ffmpegDir.FullName 'bin\ffmpeg.exe') -Destination $bundle
 Copy-Item -LiteralPath (Join-Path $ffmpegDir.FullName 'LICENSE') -Destination (Join-Path $bundle 'FFmpeg-LICENSE.txt')
+python -c "from pathlib import Path; s=Path('app.py').read_text(encoding='utf-8-sig'); assert 'K\u1ecbch b\u1ea3n ti\u1ebfng Vi\u1ec7t' in s and 'Ph\u00e2n t\u00edch v\u00e0 chia c\u1ea3nh' in s and chr(65533) not in s, 'Invalid Vietnamese UI encoding'"
 Copy-Item -LiteralPath app.py,README.md,version.txt -Destination $bundle
 @'
 Set shell = CreateObject("WScript.Shell")
