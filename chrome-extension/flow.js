@@ -62,7 +62,10 @@
     let appliedRatio;
     const batch = await send({op:"batch"});
     if (batch.done) return;
+    const queued = [];
     const results = [];
+    const cards = () => [...document.querySelectorAll('[role="group"][aria-label]')];
+    const normalize = text => (text || "").replace(/\s+/gu, " ").trim();
     for (const [offset, prompt] of batch.prompts.entries()) {
       const job = {job:batch.job, index:batch.index + offset, prompt};
       const agent = [...document.querySelectorAll('[role="checkbox"],input[type="checkbox"]')].find(node => visible(node)
@@ -106,7 +109,7 @@
             && Math.abs(field.getBoundingClientRect().right - button.getBoundingClientRect().right) < 100));
       }
       if (generate.length !== 1) throw Error("Không nhận diện được nút tạo ảnh. Kiểm tra chế độ Ảnh, model và hạn mức Flow.");
-      const before = new Set(candidates().map(i=>i.currentSrc));
+      const prior = new Set(cards());
       const editorBox = field.getBoundingClientRect();
       const nearbyArrows = buttons.filter(button => {
         const box = button.getBoundingClientRect();
@@ -123,29 +126,28 @@
       const y = box.top + box.height / 2;
       if (!submit.contains(document.elementFromPoint(x,y))) throw Error("Nút tạo ảnh đang bị che.");
       await send({op:"submit", job:job.job, x, y});
-      const submitted = await waitFor(() => !field.isConnected
-        || !(field.value ?? field.innerText ?? field.textContent ?? "").trim()
-        || candidates().some(image => !before.has(image.currentSrc)), 12);
-      if (!submitted) {
-        const hint = document.createElement("div");
-        hint.textContent = "Vẽ Tay đang chờ. Bấm mũi tên Bắt đầu tạo để tiếp tục cảnh " + (job.index + 1) + ".";
-        Object.assign(hint.style, {position:"fixed", bottom:"140px", right:"24px", zIndex:"2147483647", background:"#fff", color:"#222", padding:"12px", borderRadius:"8px", pointerEvents:"none"});
-        document.body.append(hint);
-        try {
-          if (!await waitFor(() => !field.isConnected || !(field.value ?? field.innerText ?? "").trim()
-            || candidates().some(image => !before.has(image.currentSrc)), 35))
-            throw Error("Flow chưa nhận lệnh tạo ảnh cho cảnh " + (job.index + 1) + ".");
-        } finally { hint.remove(); }
-      }
-      let result, stableSince = 0;
-      for (let elapsed=0;elapsed<175;elapsed++) {
-        await sleep(1000);
-        const found = [...new Set(candidates().map(i=>i.currentSrc).filter(src=>!before.has(src)))];
-        if (found.length > 1) throw Error("Flow trả nhiều ảnh. Chọn một kết quả mỗi lượt rồi chạy lại.");
-        if (found[0] !== result) { result=found[0]; stableSince=elapsed; }
-        if (result && elapsed-stableSince>=3) break;
-      }
-      if (!result) throw Error("Chưa nhận được ảnh mới từ Flow.");
+      const findCard = () => {
+        const matches = cards().filter(card => !prior.has(card) &&
+          (normalize(card.getAttribute("aria-label")) === normalize(prompt)
+           || normalize(card.textContent).includes(normalize(prompt))));
+        return matches.length === 1 ? matches[0] : null;
+      };
+      const card = await waitFor(findCard, 20);
+      if (!card) throw Error("Flow chưa xác nhận đã nhận prompt cảnh " + (job.index + 1) + ".");
+      queued.push({job, card, findCard});
+      await send({op:"progress", count:queued.length, stage:"submitted"});
+    }
+    const claimed = new Set();
+    for (const {job, card, findCard} of queued) {
+      const result = await waitFor(() => {
+        const current = card.isConnected ? card : findCard();
+        if (!current || claimed.has(current)) return null;
+        const urls = [...new Set(candidates().filter(image => current.contains(image)).map(image => image.currentSrc))];
+        if (urls.length !== 1) return null;
+        claimed.add(current);
+        return urls[0];
+      }, 175);
+      if (!result) throw Error("Không tìm thấy ảnh kết quả của cảnh " + (job.index + 1) + ".");
       results.push({job, result});
       await send({op:"progress", count:results.length});
     }
