@@ -60,9 +60,11 @@
   }
   async function run() {
     let appliedRatio;
-    while (true) {
-      const job = await send({op:"next"});
-      if (job.done) return;
+    const batch = await send({op:"batch"});
+    if (batch.done) return;
+    const results = [];
+    for (const [offset, prompt] of batch.prompts.entries()) {
+      const job = {job:batch.job, index:batch.index + offset, prompt};
       const agent = [...document.querySelectorAll('[role="checkbox"],input[type="checkbox"]')].find(node => visible(node)
         && /^(Tác nhân|Agent)$/iu.test((node.getAttribute("aria-label") || node.textContent || "").trim())
         && (node.checked || node.getAttribute("aria-checked") === "true"));
@@ -140,6 +142,10 @@
         if (result && elapsed-stableSince>=3) break;
       }
       if (!result) throw Error("Chưa nhận được ảnh mới từ Flow.");
+      results.push({job, result});
+      await send({op:"progress", count:results.length});
+    }
+    for (const {job, result} of results) {
       let data;
       try {
         const response = await fetch(result);
