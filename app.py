@@ -15,7 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "VeTay"
-VERSION = "0.2.14"
+VERSION = "0.2.15"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -175,6 +175,79 @@ def version_tuple(value):
         raise ValueError("Số phiên bản không hợp lệ.")
     return tuple(map(int, value.split(".")))
 
+def sync_chrome_bundle():
+    folder = DATA / "chrome-extension"
+    ref = json.loads(patch_read(PATCH_ROOT + "main/companion.json", 16384))
+    revision = ref["commit"]
+    names = {"manifest.json", "worker.js", "flow.js", "popup.html"}
+    if not re.fullmatch(r"[0-9a-f]{40}", revision) or set(ref["files"]) != names:
+        raise ValueError("Danh sách tệp tiện ích không hợp lệ.")
+    manifest_path = folder / "manifest.json"
+    old = json.loads(manifest_path.read_bytes()) if manifest_path.is_file() else None
+    if old and version_tuple(old["version"]) >= version_tuple(ref["version"]):
+        return old["version"], False
+    content = {}
+    for name, expected in ref["files"].items():
+        data = patch_read(PATCH_ROOT + revision + "/chrome-extension/" + name, 1024 * 1024)
+        blob = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+        if not re.fullmatch(r"[0-9a-f]{40}", expected) or blob != expected:
+            raise ValueError(f"Tệp tiện ích {name} không khớp mã kiểm tra GitHub.")
+        content[name] = data
+    manifest = json.loads(content["manifest.json"])
+    if manifest["version"] != ref["version"] or manifest["manifest_version"] != 3:
+        raise ValueError("Phiên bản tiện ích tải về không khớp.")
+    if old:
+        permissions = ("permissions", "host_permissions", "optional_permissions", "optional_host_permissions")
+        scopes = lambda m: sorted(pattern for script in m.get("content_scripts", []) for pattern in script.get("matches", []))
+        if (old["name"] != manifest["name"] or scopes(old) != scopes(manifest)
+            or any(sorted(old.get(key, [])) != sorted(manifest.get(key, [])) for key in permissions)):
+            raise ValueError("Bản tiện ích mới thay đổi quyền Chrome và cần xác nhận riêng.")
+    folder.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="chrome-patch-", dir=DATA) as temp:
+        pending = Path(temp)
+        backup = {name: (folder / name).read_bytes() for name in names if (folder / name).is_file()}
+        written = []
+        try:
+            for name in ("worker.js", "flow.js", "popup.html", "manifest.json"):
+                path = pending / name
+                path.write_bytes(content[name])
+                os.replace(path, folder / name)
+                written.append(name)
+        except OSError:
+            for name in reversed(written):
+                target = folder / name
+                if name in backup:
+                    path = pending / name
+                    path.write_bytes(backup[name])
+                    os.replace(path, target)
+                else:
+                    target.unlink(missing_ok=True)
+            raise
+    return manifest["version"], True
+
+def prepare_chrome_bundle():
+    if not LOCK.acquire(blocking=False):
+        return "Đợi tác vụ đang chạy kết thúc trước khi chuẩn bị tiện ích."
+    try:
+        version, _ = sync_chrome_bundle()
+        folder = DATA / "chrome-extension"
+        os.startfile(str(folder))
+        return (f"Tiện ích {version} tại {folder}. Trong Chrome, mở chrome://extensions và "
+                "nạp thư mục này một lần. Giữ nguyên đường dẫn để tự cập nhật sau này.")
+    except Exception as error:
+        return f"Không chuẩn bị được tiện ích Chrome: {error}"
+    finally:
+        LOCK.release()
+
+def refresh_existing_extension():
+    if not (DATA / "chrome-extension" / "manifest.json").is_file():
+        return
+    with LOCK:
+        try:
+            sync_chrome_bundle()
+        except (OSError, ValueError, KeyError):
+            pass
+
 def update():
     if not LOCK.acquire(blocking=False):
         return "Đợi video xuất xong trước khi cập nhật."
@@ -182,8 +255,13 @@ def update():
     try:
         manifest = json.loads(patch_read(PATCH_ROOT + "main/update.json", 16384))
         version = manifest["version"]
+        companion = ""
+        if (DATA / "chrome-extension" / "manifest.json").is_file():
+            ext_version, changed = sync_chrome_bundle()
+            if changed:
+                companion = f" Đã đồng bộ tiện ích Chrome {ext_version}. Chrome sẽ tự nạp lại khi rảnh."
         if version_tuple(version) <= version_tuple(VERSION):
-            return f"Đã ở bản mới nhất ({VERSION})."
+            return f"Vẽ Tay đang ở bản mới nhất ({VERSION})." + companion
         if manifest["abi"] != PATCH_ABI:
             return "Bản này cần nâng cấp thư viện. Tải bộ cài tại trang GitHub Releases."
         revision = manifest["commit"]
@@ -254,6 +332,10 @@ class ChromeFlowBridge:
 
             def do_GET(self):
                 import hmac
+                if self.path == "/extension-idle":
+                    with bridge.guard:
+                        idle = bridge.job is None and not LOCK.locked()
+                    return self.response(200, {"idle": idle})
                 if not hmac.compare_digest(self.headers.get("X-VeTay-Token", ""), bridge.token):
                     return self.response(403, "Mã kết nối không đúng.")
                 if self.path != "/next":
@@ -426,6 +508,7 @@ def ui(check=False):
         task = gr.Textbox(label="Tiến độ dựng", interactive=False)
         video = gr.Video(label="Video MP4")
         status = gr.Textbox(label="Trạng thái cập nhật", interactive=False)
+        gr.Button("Chuẩn bị tiện ích Chrome").click(prepare_chrome_bundle, outputs=status)
         gr.Button("Cập nhật qua GitHub").click(update, outputs=status)
         analysis.click(analyze, [script, voice, ratio], [table, video, task])
         generate.click(generate_video, [script, voice, pictures, provider, ratio], [table, video, task])
@@ -436,6 +519,7 @@ def ui(check=False):
     import webview
     try:
         chrome_server = bridge.serve()
+        threading.Thread(target=refresh_existing_extension, daemon=True).start()
     except OSError:
         pass
     _, local_url, _ = app.queue(default_concurrency_limit=1).launch(
