@@ -15,7 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "VeTay"
-VERSION = "0.2.7"
+VERSION = "0.2.8"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -131,12 +131,25 @@ def prepare_audio(script, voice, folder):
     ffmpeg("-i", voice, "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", wav)
     return wav
 
+def normalize_flow_url(value):
+    from urllib.parse import urlsplit, urlunsplit
+    value = (value or "").strip().strip('<>"“”').strip()
+    if not value:
+        raise ValueError("Ô Đường dẫn dự án Google Flow đang trống. Hãy dán link từ thanh địa chỉ trong dự án.")
+    if "://" not in value:
+        value = "https://" + value
+    parsed = urlsplit(value)
+    allowed = {"labs.google", "flow.google", "flow.google.com"}
+    if (parsed.scheme != "https" or parsed.hostname not in allowed
+        or parsed.username or parsed.password or parsed.port not in (None, 443)):
+        raise ValueError("Link Flow phải dùng HTTPS và có tên miền flow.google.com, flow.google hoặc labs.google.")
+    if any(character.isspace() for character in value):
+        raise ValueError("Hãy dán riêng đường dẫn Flow, không kèm tiêu đề hoặc văn bản khác.")
+    return urlunsplit(("https", parsed.hostname, parsed.path, parsed.query, parsed.fragment))
+
 def flow_images(url, model, prompts, folder, report):
     from playwright.sync_api import sync_playwright
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname not in {"labs.google", "flow.google"}:
-        raise ValueError("Dán URL dự án Flow chính thức của Google.")
+    url = normalize_flow_url(url)
     report("Đang mở Edge để kết nối Google Flow…")
     with sync_playwright() as play:
         browser = play.chromium.launch_persistent_context(str(DATA / "flow-profile"), channel="msedge",
@@ -351,7 +364,7 @@ def ui(check=False):
             with gr.Column():
                 provider = gr.Radio([("Google Flow (thử nghiệm)", "flow"), ("Ảnh có sẵn", "files")],
                                     value="flow", label="Nguồn ảnh minh họa")
-                url = gr.Textbox(label="Đường dẫn dự án Google Flow", placeholder="Dán link của một dự án Flow đã mở", info="Vẽ Tay tự gửi prompt theo từng cảnh. Lần đầu, đăng nhập trong cửa sổ Edge do ứng dụng mở.")
+                url = gr.Textbox(label="Đường dẫn dự án Google Flow", placeholder="https://flow.google.com/… hoặc link dự án Labs Flow", info="Vẽ Tay tự gửi prompt theo từng cảnh. Lần đầu, đăng nhập trong cửa sổ Edge do ứng dụng mở.")
                 model = gr.Radio(["Nano Banana 2.1", "Nano Banana 2 Lite"], value="Nano Banana 2.1",
                                  label="Model ảnh trong Google Flow")
                 pictures = gr.File(label="Ảnh có sẵn theo thứ tự cảnh", file_count="multiple",
