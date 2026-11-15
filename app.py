@@ -15,7 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "VeTay"
-VERSION = "0.2.8"
+VERSION = "0.2.9"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -147,16 +147,33 @@ def normalize_flow_url(value):
         raise ValueError("Hãy dán riêng đường dẫn Flow, không kèm tiêu đề hoặc văn bản khác.")
     return urlunsplit(("https", parsed.hostname, parsed.path, parsed.query, parsed.fragment))
 
+def open_flow_sign_in(url):
+    try:
+        url = normalize_flow_url(url or "https://flow.google.com/")
+        candidates = [Path(os.environ[key]) / "Microsoft/Edge/Application/msedge.exe"
+                      for key in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA") if os.environ.get(key)]
+        edge = next((path for path in candidates if path.is_file()), None)
+        if edge is None:
+            raise RuntimeError("Không tìm thấy Microsoft Edge.")
+        subprocess.Popen([str(edge), f"--user-data-dir={DATA / 'flow-profile'}", url])
+        return ("Đăng nhập Google trong Edge vừa mở. Sau khi vào được Flow, "
+                "đóng toàn bộ cửa sổ Edge của hồ sơ này rồi bấm Tự tạo video.")
+    except Exception as error:
+        return f"Không mở được Edge: {error}"
+
 def flow_images(url, model, prompts, folder, report):
     from playwright.sync_api import sync_playwright
     url = normalize_flow_url(url)
     report("Đang mở Edge để kết nối Google Flow…")
     with sync_playwright() as play:
         browser = play.chromium.launch_persistent_context(str(DATA / "flow-profile"), channel="msedge",
-                                                          headless=False, accept_downloads=True)
+                                                          headless=False, accept_downloads=True, chromium_sandbox=True)
         try:
             page = browser.pages[0] if browser.pages else browser.new_page()
             page.goto(url, wait_until="domcontentloaded")
+            from urllib.parse import urlsplit
+            if urlsplit(page.url).hostname == "accounts.google.com":
+                raise RuntimeError("Cần đăng nhập trước. Bấm Mở Edge để đăng nhập Flow trong Vẽ Tay.")
             field = page.locator('textarea:visible, [contenteditable="true"]:visible')
             report("Đang đợi mở dự án Flow. Nếu được hỏi, hãy đăng nhập Google trong Edge.")
             field.last.wait_for(timeout=180000)
@@ -367,6 +384,7 @@ def ui(check=False):
                 url = gr.Textbox(label="Đường dẫn dự án Google Flow", placeholder="https://flow.google.com/… hoặc link dự án Labs Flow", info="Vẽ Tay tự gửi prompt theo từng cảnh. Lần đầu, đăng nhập trong cửa sổ Edge do ứng dụng mở.")
                 model = gr.Radio(["Nano Banana 2.1", "Nano Banana 2 Lite"], value="Nano Banana 2.1",
                                  label="Model ảnh trong Google Flow")
+                flow_login = gr.Button("Mở Edge để đăng nhập Flow")
                 pictures = gr.File(label="Ảnh có sẵn theo thứ tự cảnh", file_count="multiple",
                                    file_types=["image"], type="filepath")
         with gr.Row():
@@ -380,6 +398,7 @@ def ui(check=False):
         video = gr.Video(label="Video MP4")
         status = gr.Textbox(label="Trạng thái cập nhật", interactive=False)
         gr.Button("Cập nhật qua GitHub").click(update, outputs=status)
+        flow_login.click(open_flow_sign_in, inputs=url, outputs=task)
         analysis.click(analyze, [script, voice, ratio], [table, video, task])
         generate.click(generate_video, [script, voice, pictures, provider, url, model, ratio], [table, video, task])
     if check:
