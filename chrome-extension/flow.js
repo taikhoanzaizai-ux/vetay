@@ -76,6 +76,9 @@
         field = await waitFor(promptField, 10);
         if (!field) throw Error("Không thấy ô prompt sau khi chọn tỷ lệ.");
       }
+      await send({op:"activate"});
+      if (!await waitFor(() => document.hasFocus() && !document.hidden, 6))
+        throw Error("Chrome chưa đưa tab Flow lên trước để gửi prompt.");
       field.focus();
       if (field instanceof HTMLTextAreaElement) {
         Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(field,job.prompt);
@@ -113,12 +116,21 @@
       });
       const submit = nearbyArrows.length === 1 ? nearbyArrows[0] : generate[0];
       submit.scrollIntoView({block:"nearest", inline:"nearest"});
-      submit.focus({preventScroll:true});
       submit.click();
       const submitted = await waitFor(() => !field.isConnected
         || !(field.value ?? field.innerText ?? field.textContent ?? "").trim()
         || candidates().some(image => !before.has(image.currentSrc)), 12);
-      if (!submitted) throw Error("Flow vẫn giữ prompt sau khi bấm Bắt đầu tạo. Kiểm tra thông báo trong dự án Flow.");
+      if (!submitted) {
+        const hint = document.createElement("div");
+        hint.textContent = "Vẽ Tay đang chờ. Bấm mũi tên Bắt đầu tạo để tiếp tục cảnh " + (job.index + 1) + ".";
+        Object.assign(hint.style, {position:"fixed", bottom:"140px", right:"24px", zIndex:"2147483647", background:"#fff", color:"#222", padding:"12px", borderRadius:"8px", pointerEvents:"none"});
+        document.body.append(hint);
+        try {
+          if (!await waitFor(() => !field.isConnected || !(field.value ?? field.innerText ?? "").trim()
+            || candidates().some(image => !before.has(image.currentSrc)), 35))
+            throw Error("Flow chưa nhận lệnh tạo ảnh cho cảnh " + (job.index + 1) + ".");
+        } finally { hint.remove(); }
+      }
       let result, stableSince = 0;
       for (let elapsed=0;elapsed<175;elapsed++) {
         await sleep(1000);
