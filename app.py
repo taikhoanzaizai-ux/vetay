@@ -206,7 +206,7 @@ def update():
                     handle.write(chunk)
             if total != asset["size"] or f"sha256:{digest.hexdigest()}" != checksum:
                 raise RuntimeError("B? c�i t?i v? kh�ng qua ki?m tra SHA-256.")
-            subprocess.Popen([str(exe), "/CLOSEAPPLICATIONS"], cwd=stage)
+            subprocess.Popen([str(exe), "/CLOSEAPPLICATIONS", "/RESTARTVETAY", f"/DIR={ROOT}"], cwd=stage)
         except Exception:
             shutil.rmtree(stage, ignore_errors=True)
             raise
