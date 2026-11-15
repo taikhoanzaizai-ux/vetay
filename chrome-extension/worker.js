@@ -10,15 +10,6 @@ async function api(token, path, body) {
 }
 chrome.runtime.onMessage.addListener((m,sender,reply) => {
   (async()=>{
-    if (m.op === "begin" && !sender.tab) {
-      const tab = await chrome.tabs.get(m.tabId);
-      if (!flowTab(tab.url)) throw Error("Tab hiện tại không phải Flow.");
-      const job = await api(m.token,"/next");
-      if (job.done) throw Error("Bấm Tự tạo video trong Vẽ Tay trước.");
-      await chrome.storage.session.set({pairing:m.token});
-      await chrome.scripting.executeScript({target:{tabId:tab.id},files:["flow.js"]});
-      return {};
-    }
     if (!flowTab(sender.tab?.url)) throw Error("Chỉ nhận yêu cầu từ tab Flow.");
     const key = "pairing:" + sender.tab.id;
     if (m.op === "pair") {
@@ -28,8 +19,9 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
       await chrome.storage.session.set({[key]:m.token});
       return job;
     }
-    const saved = await chrome.storage.session.get([key, "pairing"]);
-    const pairing = saved[key] || saved.pairing;
+    const saved = await chrome.storage.session.get(key);
+    const pairing = saved[key];
+    if (!pairing) throw Error("Tab chưa được Vẽ Tay kết nối.");
     if (m.op === "next") return api(pairing,"/next");
     if (m.op === "error") return api(pairing,"/error",JSON.stringify({message:m.message}));
     if (m.op === "image" && /^[a-f0-9]{32}$/.test(m.job) && Number.isInteger(m.index)) {
