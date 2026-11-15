@@ -71,7 +71,7 @@
   const projectOpen = () => /\/projects?\/[^/]+/.test(location.pathname);
   const matching = (pattern) => [...document.querySelectorAll("button,[role=button],[role=tab],a")]
     .filter(item=>visible(item)&&!item.disabled&&item.getAttribute("aria-disabled")!=="true"
-      && (pattern.test(caption(item)) || pattern.test((item.textContent || "").trim())));
+      && (pattern.test(caption(item)) || pattern.test((item.innerText || item.textContent || "").replace(/\s+/gu, " ").trim())));
   async function connect() {
     const state = await send(pairing ? {op:"pair",token:pairing} : {op:"resume"});
     if (state.done) return;
@@ -79,8 +79,9 @@
     if (!projectOpen()) {
       if (!pairing) throw Error("Flow vẫn ở trang chủ sau khi tạo dự án. Kiểm tra đăng nhập rồi chạy lại.");
       const create = await waitFor(() => {
-        const choices=matching(/^(New project|Create project|Create new project|Dự án mới|Tạo dự án|Tạo dự án mới)$/i);
-        return choices.length===1 ? choices[0] : null;
+        const choices = matching(/^(?:(?:add(?:_circle|_box)?|plus|\+)\s*)?(?:New project|Create project|Create new project|Dự án mới|Tạo dự án|Tạo dự án mới)$/iu);
+        const controls = choices.filter(item => !choices.some(other => other !== item && item.contains(other)));
+        return controls[0] || null;
       },35);
       if (!create) throw Error("Không tìm thấy nút tạo dự án Flow. Kiểm tra Chrome đã đăng nhập và xem trang Flow có thông báo gì.");
       create.click();
