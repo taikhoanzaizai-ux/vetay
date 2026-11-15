@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.29"
+VERSION = "0.2.30"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -150,8 +150,61 @@ def timecode(frame):
     seconds, fraction = divmod(remainder, 1000)
     return f"{minutes:02}:{seconds:02}.{fraction:03}"
 
-def scene_rows(plan, ratio="9:16"):
-    return [[i, timecode(start), timecode(end), round((end-start)/24, 3), text, prompt_for(text, ratio)]
+def highlight_text(text):
+    text = " ".join(text.split())
+    number = re.search(
+        r"(?<!\w)\d+(?:[.,]\d+)*(?:\s*(?:tỷ|triệu|nghìn|ngàn))?"
+        r"(?:\s*(?:đồng|đ|%|kg|km|giờ|phút|giây|ngày|tuần|tháng|năm|lần|buổi|tuổi)\b|%)",
+        text, re.IGNORECASE,
+    )
+    if number:
+        return number.group().strip()
+    phrase = re.split(r"[,;!?。]|(?<!\d)\.(?!\d)", text, maxsplit=1)[0].strip()
+    return " ".join((phrase or text).split()[:7])[:74].rstrip(" ,.:;")
+
+
+def highlight_overlay(text, width, height, target):
+    from PIL import Image, ImageDraw, ImageFont
+    image = Image.new("RGBA", (width, height))
+    draw = ImageDraw.Draw(image)
+    fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    size = max(14, min(width, height) // 13)
+    padding = max(8, size // 2)
+    max_width = width * 86 // 100 - 2 * padding
+    for font_size in range(size, 9, -1):
+        try:
+            font = ImageFont.truetype(str(fonts / "arialbd.ttf"), font_size)
+        except OSError:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
+        words = text.split()
+        lines = [""]
+        for word in words:
+            trial = (lines[-1] + " " + word).strip()
+            if lines[-1] and draw.textlength(trial, font=font) > max_width:
+                lines.append(word)
+            else:
+                lines[-1] = trial
+        if len(lines) <= 2 and all(draw.textlength(line, font=font) <= max_width for line in lines):
+            break
+    else:
+        return False
+    label = "\n".join(lines)
+    spacing = max(3, font_size // 5)
+    left, top, right, bottom = draw.multiline_textbbox((0, 0), label, font=font, spacing=spacing)
+    box_width = right - left + padding * 2
+    box_height = bottom - top + padding * 2
+    x = (width - box_width) // 2
+    y = height - (height // 12) - box_height
+    draw.rounded_rectangle((x, y, x + box_width, y + box_height), radius=padding,
+                           fill="#FFF1B8", outline="#08776B", width=max(2, padding // 5))
+    draw.multiline_text((x + padding - left, y + padding - top), label, font=font,
+                        fill="#07594F", spacing=spacing, align="center")
+    image.save(target)
+    return True
+
+
+def scene_rows(plan, ratio="9:16", highlights=False):
+    return [[i, timecode(start), timecode(end), round((end-start)/24, 3), text, prompt_for(text, ratio), highlight_text(text) if highlights else ""]
             for i, (start, end, text) in enumerate(plan, 1)]
 
 def prepare_audio(script, voice, folder):
@@ -166,7 +219,7 @@ def prepare_audio(script, voice, folder):
     ffmpeg("-i", voice, "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", wav)
     return wav
 
-def render_folder(voice, pictures, plan, destination, report, ratio="9:16"):
+def render_folder(voice, pictures, plan, destination, report, ratio="9:16", highlights=False):
     from PIL import Image, ImageOps
     import numpy as np
     path, render_video, Settings = engine()
@@ -177,7 +230,7 @@ def render_folder(voice, pictures, plan, destination, report, ratio="9:16"):
     with tempfile.TemporaryDirectory(prefix="vetay-", dir=destination.parent) as work:
         work = Path(work)
         clips = []
-        for i, ((start, end, _), picture) in enumerate(zip(plan, pictures)):
+        for i, ((start, end, text), picture) in enumerate(zip(plan, pictures)):
             report(f"Whiteboard Animation VI: cảnh {i+1}/{len(plan)}…")
             with Image.open(picture) as raw:
                 art = ImageOps.contain(ImageOps.exif_transpose(raw).convert("RGB"), (preview_width, preview_height))
@@ -187,6 +240,15 @@ def render_folder(voice, pictures, plan, destination, report, ratio="9:16"):
                                 duration=(end-start)/24, draw_percent=70, mode="e",
                                 subject_first=(path / "assets/v181d/model.safetensors").is_file())
             clip, _ = render_video(np.array(canvas), settings, output_dir=work)
+            if highlights and (label := highlight_text(text)):
+                overlay = work / f"highlight-{i:04}.png"
+                if highlight_overlay(label, preview_width, preview_height, overlay):
+                    titled = work / f"titled-{i:04}.mp4"
+                    delay = min(1.3, (end-start)/48)
+                    ffmpeg("-i", clip, "-i", overlay, "-filter_complex",
+                           f"[0:v][1:v]overlay=enable='gte(t,{delay:.3f})':eof_action=repeat",
+                           "-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", titled)
+                    clip = titled
             clips.append(clip)
         listing = work / "clips.txt"
         listing.write_text("".join(f"file '{clip.name}'\n" for clip in clips), encoding="utf-8")
@@ -500,7 +562,7 @@ def ui(check=False):
     import gradio as gr
     bridge = ChromeFlowBridge()
     chrome_server = None
-    def run(script, voice, pictures, provider, ratio, render, progress=gr.Progress()):
+    def run(script, voice, pictures, provider, ratio, highlights, render, progress=gr.Progress()):
         def report(message):
             progress(None, desc=message)
         if not LOCK.acquire(blocking=False):
@@ -528,7 +590,7 @@ def ui(check=False):
                     os.replace(wav, cache)
                     wav = cache
                     LAST_ANALYSIS.update(key=key, plan=plan)
-                rows = scene_rows(plan, ratio)
+                rows = scene_rows(plan, ratio, highlights)
                 yield rows, None, f"Sẵn sàng: {len(rows)} cảnh và prompt."
                 if not render:
                     return
@@ -536,12 +598,12 @@ def ui(check=False):
                     if chrome_server is None:
                         raise RuntimeError("Cổng kết nối Chrome 7877 đang bận. Đóng các bản Vẽ Tay khác rồi mở lại.")
                     yield rows, None, "Đang mở Google Flow và kết nối tự động với tiện ích Chrome…"
-                    pictures = bridge.images([row[-1] for row in rows], folder, report)
+                    pictures = bridge.images([row[5] for row in rows], folder, report)
 
                 if not pictures:
                     raise ValueError("Chọn ảnh theo thứ tự cảnh hoặc chọn Google Flow.")
                 dest = DATA / f"VeTay-{uuid.uuid4().hex[:8]}.mp4"
-                path = render_folder(wav, pictures, plan, dest, report, ratio)
+                path = render_folder(wav, pictures, plan, dest, report, ratio, highlights)
                 yield rows, path, f"Đã xuất MP4 · {len(rows)} cảnh."
         except subprocess.CalledProcessError as error:
             detail = (error.stderr or b"").decode("utf-8", errors="replace").strip()
@@ -551,11 +613,11 @@ def ui(check=False):
         finally:
             LOCK.release()
 
-    def analyze(script, voice, ratio):
-        yield from run(script, voice, None, None, ratio, False)
+    def analyze(script, voice, ratio, highlights):
+        yield from run(script, voice, None, None, ratio, highlights, False)
 
-    def generate_video(script, voice, pictures, provider, ratio):
-        yield from run(script, voice, pictures, provider, ratio, True)
+    def generate_video(script, voice, pictures, provider, ratio, highlights):
+        yield from run(script, voice, pictures, provider, ratio, highlights, True)
 
     css = "body, .gradio-container, button, textarea, input { font-family: 'Segoe UI', Arial, sans-serif !important; }"
     with gr.Blocks(title="Vẽ Tay") as app:
@@ -573,20 +635,21 @@ def ui(check=False):
 
                 pictures = gr.File(label="Ảnh có sẵn theo thứ tự cảnh", file_count="multiple",
                                    file_types=["image"], type="filepath")
+        highlights = gr.Checkbox(value=True, label="Chữ nhấn theo cảnh")
         with gr.Row():
             analysis = gr.Button("Phân tích và chia cảnh")
             generate = gr.Button("Tự tạo video", variant="primary")
         table = gr.Dataframe(headers=["Cảnh", "Bắt đầu", "Kết thúc", "Thời lượng (giây)",
-                                      "Lời đọc", "Prompt Google Flow"],
-                             datatype=["number", "str", "str", "number", "str", "str"],
+                                      "Lời đọc", "Prompt Google Flow", "Chữ nhấn"],
+                             datatype=["number", "str", "str", "number", "str", "str", "str"],
                              label="Bảng phân cảnh theo lời đọc", wrap=True, interactive=False)
         task = gr.Textbox(label="Tiến độ dựng", interactive=False)
         video = gr.Video(label="Video MP4")
         status = gr.Textbox(label="Trạng thái cập nhật", interactive=False)
         gr.Button("Chuẩn bị tiện ích Chrome").click(prepare_chrome_bundle, outputs=status)
         gr.Button("Cập nhật qua GitHub").click(update, outputs=status)
-        analysis.click(analyze, [script, voice, ratio], [table, video, task])
-        generate.click(generate_video, [script, voice, pictures, provider, ratio], [table, video, task])
+        analysis.click(analyze, [script, voice, ratio, highlights], [table, video, task])
+        generate.click(generate_video, [script, voice, pictures, provider, ratio, highlights], [table, video, task])
     if check:
         engine()
         print(f"VeTay {VERSION}: {len(app.config['components'])} controls.")
