@@ -15,7 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "VeTay"
-VERSION = "0.2.10"
+VERSION = "0.2.11"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -332,9 +332,108 @@ def update():
             LOCK.release()
 
 
+class ChromeFlowBridge:
+    def __init__(self):
+        self.token = uuid.uuid4().hex
+        self.guard = threading.Lock()
+        self.job = None
+
+    def serve(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        bridge = self
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def response(self, status, data):
+                content = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+
+            def do_GET(self):
+                import hmac
+                if not hmac.compare_digest(self.headers.get("X-VeTay-Token", ""), bridge.token):
+                    return self.response(403, "Mã kết nối không đúng.")
+                if self.path != "/next":
+                    return self.response(404, "Không tìm thấy.")
+                with bridge.guard:
+                    state = bridge.job
+                    index = len(state["paths"]) if state else 0
+                    if not state or state["error"] or index >= len(state["prompts"]):
+                        return self.response(200, {"done": True})
+                    result = {"job": state["id"], "index": index, "prompt": state["prompts"][index]}
+                self.response(200, result)
+
+            def do_POST(self):
+                import hmac
+                import io
+                from PIL import Image, ImageOps
+                if not hmac.compare_digest(self.headers.get("X-VeTay-Token", ""), bridge.token):
+                    return self.response(403, "Mã kết nối không đúng.")
+                try:
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if size <= 0 or size > 24 * 1024 * 1024:
+                        raise ValueError("Kích thước dữ liệu không hợp lệ.")
+                    self.connection.settimeout(20)
+                    with bridge.guard:
+                        state = bridge.job
+                        if not state or state["error"]:
+                            return self.response(409, "Không có tác vụ đang chờ.")
+                        index = len(state["paths"])
+                        if self.path == "/error" and size <= 8192:
+                            state["error"] = str(json.loads(self.rfile.read(size))["message"])[:600]
+                        elif self.path == f"/image/{state['id']}/{index}" and index < len(state["prompts"]):
+                            payload = self.rfile.read(size)
+                            if len(payload) != size:
+                                raise ValueError("Ảnh chưa tải đủ.")
+                            with Image.open(io.BytesIO(payload)) as image:
+                                if image.width * image.height > 32_000_000:
+                                    raise ValueError("Ảnh quá lớn.")
+                                target = state["folder"] / f"chrome-{index:04}.png"
+                                ImageOps.exif_transpose(image).convert("RGB").save(target)
+                            state["paths"].append(target)
+                        else:
+                            return self.response(409, "Ảnh không khớp mã hoặc thứ tự cảnh.")
+                        state["event"].set()
+                    self.response(200, {"received": True})
+                except Exception as error:
+                    self.response(400, str(error)[:300])
+
+        server = ThreadingHTTPServer(("127.0.0.1", 7877), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    def images(self, prompts, folder, report):
+        state = {"id": uuid.uuid4().hex, "prompts": prompts, "folder": folder,
+                 "paths": [], "event": threading.Event(), "error": None}
+        with self.guard:
+            self.job = state
+        try:
+            report("Đang chờ tiện ích Chrome. Mở tab dự án Flow và bấm Chạy các cảnh đang chờ.")
+            while True:
+                if not state["event"].wait(240):
+                    raise RuntimeError("Hết thời gian chờ tiện ích Chrome. Kiểm tra mã kết nối, tab Flow và tiện ích.")
+                with self.guard:
+                    state["event"].clear()
+                    if state["error"]:
+                        raise RuntimeError("Google Flow: " + state["error"])
+                    count = len(state["paths"])
+                    if count == len(prompts):
+                        return state["paths"].copy()
+                report(f"Chrome đã trả {count}/{len(prompts)} ảnh.")
+        finally:
+            with self.guard:
+                self.job = None
+
 def ui(check=False):
     import gradio as gr
     DATA.mkdir(parents=True, exist_ok=True)
+    bridge = ChromeFlowBridge()
+    chrome_server = None
     def run(script, voice, pictures, provider, url, model, ratio, render, progress=gr.Progress()):
         def report(message):
             progress(None, desc=message)
@@ -367,6 +466,11 @@ def ui(check=False):
                 yield rows, None, f"Sẵn sàng: {len(rows)} cảnh và prompt."
                 if not render:
                     return
+                if provider == "chrome":
+                    if chrome_server is None:
+                        raise RuntimeError("Cổng kết nối Chrome 7877 đang bận. Đóng các bản Vẽ Tay khác rồi mở lại.")
+                    yield rows, None, "Đang chờ tiện ích Chrome. Mở tab Flow và bấm Chạy các cảnh đang chờ."
+                    pictures = bridge.images([row[-1] for row in rows], folder, report)
                 if provider == "flow":
                     pictures = list(flow_images((url or "").strip(), model, [row[-1] for row in rows], folder, report))
                     yield rows, None, f"Google Flow đã tạo ảnh {len(pictures)}/{len(rows)}."
@@ -400,11 +504,12 @@ def ui(check=False):
                 ratio = gr.Dropdown([(f"{key} · {w} × {h}", key) for key, (w,h) in VIDEO_SIZES.items()],
                                     value="9:16", label="Tỷ lệ video")
             with gr.Column():
-                provider = gr.Radio([("Google Flow (thử nghiệm)", "flow"), ("Ảnh có sẵn", "files")],
-                                    value="flow", label="Nguồn ảnh minh họa")
+                provider = gr.Radio([("Google Flow qua tiện ích Chrome", "chrome"), ("Google Flow qua Edge (thử nghiệm)", "flow"), ("Ảnh có sẵn", "files")],
+                                    value="chrome", label="Nguồn ảnh minh họa")
                 url = gr.Textbox(label="Đường dẫn dự án Google Flow", placeholder="https://flow.google.com/… hoặc link dự án Labs Flow", info="Vẽ Tay tự gửi prompt theo từng cảnh. Lần đầu, đăng nhập trong cửa sổ Edge do ứng dụng mở.")
                 model = gr.Radio(["Nano Banana 2.1", "Nano Banana 2 Lite"], value="Nano Banana 2.1",
                                  label="Model ảnh trong Google Flow")
+                gr.Textbox(value=bridge.token, label="Mã kết nối tiện ích Chrome", interactive=False, buttons=["copy"])
                 flow_login = gr.Button("Mở Edge để đăng nhập Flow")
                 pictures = gr.File(label="Ảnh có sẵn theo thứ tự cảnh", file_count="multiple",
                                    file_types=["image"], type="filepath")
@@ -427,6 +532,10 @@ def ui(check=False):
         print(f"VeTay {VERSION}: {len(app.config['components'])} controls.")
         return
     import webview
+    try:
+        chrome_server = bridge.serve()
+    except OSError:
+        pass
     _, local_url, _ = app.queue(default_concurrency_limit=1).launch(
         server_name="127.0.0.1", prevent_thread_lock=True, inbrowser=False,
         share=False, allowed_paths=[str(DATA)], quiet=True, css=css)
@@ -434,6 +543,9 @@ def ui(check=False):
         webview.create_window("Vẽ Tay", local_url, width=1080, height=900, min_size=(740, 620))
         webview.start(gui="edgechromium")
     finally:
+        if chrome_server is not None:
+            chrome_server.shutdown()
+            chrome_server.server_close()
         app.close()
 
 if __name__ == "__main__":
