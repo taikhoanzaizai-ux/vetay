@@ -13,13 +13,24 @@
   const candidates = () => [...document.images].filter(img => img.complete && img.naturalWidth >= 384 &&
     img.naturalHeight >= 384 && visible(img) && /^(blob:|https:\/\/[^/]*\.googleusercontent\.com\/)/i.test(img.currentSrc));
   const caption = button => (button.getAttribute("aria-label") || button.getAttribute("title") || button.textContent || "").trim();
+  function promptField() {
+    const fields = [...document.querySelectorAll('textarea,[contenteditable="true"],[contenteditable="plaintext-only"]')]
+      .filter(field => visible(field) && !field.closest('[inert],[aria-hidden="true"],[role="search"]')
+        && !field.disabled && !field.readOnly && field.getAttribute("aria-disabled") !== "true");
+    const labels = field => ["aria-label", "placeholder", "data-placeholder", "title"]
+      .map(name => field.getAttribute(name) || "").join(" ");
+    const eligible = fields.filter(field => !/search|tìm kiếm|rename|đổi tên|project name|tên dự án/i.test(labels(field))
+      && !fields.some(parent => parent !== field && parent.contains(field)));
+    const matches = eligible.filter(field => /prompt|what (?:do|would) you|describe|mô tả|bạn muốn|tạo nội dung/i.test(labels(field)));
+    if (matches.length === 1) return matches[0];
+    return eligible.length === 1 ? eligible[0] : null;
+  }
   async function run() {
     while (true) {
       const job = await send({op:"next"});
       if (job.done) return;
-      const fields = [...document.querySelectorAll('textarea,[contenteditable="true"]')].filter(visible);
-      if (fields.length !== 1) throw Error("Không xác định được ô prompt duy nhất. Mở trang tạo ảnh trong dự án Flow.");
-      const field = fields[0];
+      const field = await waitFor(promptField, 25);
+      if (!field) throw Error("Không xác định được ô prompt duy nhất. Mở trang tạo ảnh trong dự án Flow.");
       field.focus();
       if (field instanceof HTMLTextAreaElement) {
         Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(field,job.prompt);
