@@ -23,6 +23,26 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
     const pairing = saved[key];
     if (m.op === "resume") return pairing ? api(pairing,"/next") : {done:true};
     if (!pairing) throw Error("Tab chưa được Vẽ Tay kết nối.");
+    if (m.op === "submit") {
+      const tab = await chrome.tabs.get(sender.tab.id);
+      if (!tab.active || sender.frameId !== 0 || new URL(tab.url).origin !== "https://flow.google.com"
+        || !/^\/project\/[^/]+\/?$/.test(new URL(tab.url).pathname)
+        || ![m.x,m.y].every(Number.isFinite) || m.x < 0 || m.y < 0 || m.x > 10000 || m.y > 10000)
+        throw Error("Tab dự án Flow không còn ở trạng thái sẵn sàng.");
+      const job = await api(pairing,"/next");
+      if (job.done || job.job !== m.job) throw Error("Tác vụ Vẽ Tay đã đổi.");
+      const target = {tabId:tab.id};
+      await chrome.debugger.attach(target,"1.3");
+      try {
+        const input = (type,buttons) => chrome.debugger.sendCommand(target,"Input.dispatchMouseEvent",
+          {type,x:m.x,y:m.y,button:"left",buttons,clickCount:1});
+        await input("mousePressed",1);
+        await input("mouseReleased",0);
+      } finally {
+        await chrome.debugger.detach(target);
+      }
+      return {clicked:true};
+    }
     if (m.op === "activate") {
       await chrome.tabs.update(sender.tab.id, {active:true});
       await chrome.windows.update(sender.tab.windowId, {focused:true});
