@@ -118,7 +118,11 @@
       });
       const submit = nearbyArrows.length === 1 ? nearbyArrows[0] : generate[0];
       submit.scrollIntoView({block:"nearest", inline:"nearest"});
-      submit.click();
+      const box = submit.getBoundingClientRect();
+      const x = box.left + box.width / 2;
+      const y = box.top + box.height / 2;
+      if (!submit.contains(document.elementFromPoint(x,y))) throw Error("Nút tạo ảnh đang bị che.");
+      await send({op:"submit", job:job.job, x, y});
       const submitted = await waitFor(() => !field.isConnected
         || !(field.value ?? field.innerText ?? field.textContent ?? "").trim()
         || candidates().some(image => !before.has(image.currentSrc)), 12);
