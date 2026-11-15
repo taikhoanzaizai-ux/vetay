@@ -1,7 +1,6 @@
 (() => {
   const pairing = /^#vetay=([a-f0-9]{32})$/.exec(location.hash)?.[1];
-  if (!pairing) return;
-  history.replaceState(history.state, "", location.pathname + location.search);
+  if (pairing) history.replaceState(history.state, "", location.pathname + location.search);
   if (window.__veTayRunning) return;
   window.__veTayRunning = true;
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve,ms));
@@ -36,7 +35,8 @@
       await sleep(500);
       const buttons = [...document.querySelectorAll("button,[role=button]")].filter(b=>visible(b)&&!b.disabled&&b.getAttribute("aria-disabled")!=="true");
       let generate = buttons.filter(b=>/^(Generate Image|Create Image|Tạo hình ảnh|Tạo ảnh)$/i.test(caption(b)));
-      if (generate.length === 0) generate = buttons.filter(b=>/^(Generate|Tạo)$/i.test(caption(b)));
+      if (generate.length === 0 && matching(/Nano Banana|Imagen/i).length === 1)
+        generate = buttons.filter(b=>/^(Generate|Tạo)$/i.test(caption(b)));
       if (generate.length !== 1) throw Error("Không nhận diện được nút tạo ảnh. Kiểm tra chế độ Ảnh, model và hạn mức Flow.");
       const before = new Set(candidates().map(i=>i.currentSrc));
       generate[0].click();
@@ -60,10 +60,36 @@
       await send({op:"image",job:job.job,index:job.index,url:result,data});
     }
   }
+  async function waitFor(find, seconds) {
+    for (let i=0;i<seconds*2;i++) {
+      const value=find();
+      if (value) return value;
+      await sleep(500);
+    }
+    return null;
+  }
+  const projectOpen = () => /\/projects?\/[^/]+/.test(location.pathname);
+  const matching = (pattern) => [...document.querySelectorAll("button,[role=button],[role=tab],a")]
+    .filter(item=>visible(item)&&!item.disabled&&item.getAttribute("aria-disabled")!=="true"
+      && (pattern.test(caption(item)) || pattern.test((item.textContent || "").trim())));
   async function connect() {
-    if (pairing) await send({op:"pair",token:pairing});
+    const state = await send(pairing ? {op:"pair",token:pairing} : {op:"resume"});
+    if (state.done) return;
     if (document.readyState === "loading") await new Promise(resolve=>document.addEventListener("DOMContentLoaded",resolve,{once:true}));
-    for(let i=0;i<45&&!document.querySelector('textarea,[contenteditable="true"]');i++) await sleep(1000);
+    if (!projectOpen()) {
+      if (!pairing) throw Error("Flow vẫn ở trang chủ sau khi tạo dự án. Kiểm tra đăng nhập rồi chạy lại.");
+      const create = await waitFor(() => {
+        const choices=matching(/^(New project|Create project|Create new project|Dự án mới|Tạo dự án|Tạo dự án mới)$/i);
+        return choices.length===1 ? choices[0] : null;
+      },35);
+      if (!create) throw Error("Không tìm thấy nút tạo dự án Flow. Kiểm tra Chrome đã đăng nhập và xem trang Flow có thông báo gì.");
+      create.click();
+      if (!await waitFor(projectOpen,45)) throw Error("Flow chưa mở dự án mới sau khi bấm tạo.");
+    }
+    if (!await waitFor(()=>document.querySelector('textarea,[contenteditable="true"]'),45))
+      throw Error("Dự án mới chưa hiện ô prompt.");
+    const imageMode=matching(/^(Image|Ảnh|Hình ảnh)$/i);
+    if (imageMode.length===1) imageMode[0].click();
     await run();
   }
   connect().catch(async error => {
