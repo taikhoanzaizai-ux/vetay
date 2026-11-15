@@ -9,8 +9,6 @@
     "service_worker": "worker.js"
   },
   "permissions": [
-    "activeTab",
-    "scripting",
     "storage"
   ],
   "host_permissions": [
