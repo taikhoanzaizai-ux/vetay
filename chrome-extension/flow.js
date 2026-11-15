@@ -102,7 +102,20 @@
       }
       if (generate.length !== 1) throw Error("Không nhận diện được nút tạo ảnh. Kiểm tra chế độ Ảnh, model và hạn mức Flow.");
       const before = new Set(candidates().map(i=>i.currentSrc));
-      generate[0].click();
+      const submit = generate[0];
+      submit.scrollIntoView({block:"nearest", inline:"nearest"});
+      const rect = submit.getBoundingClientRect();
+      const clientX = rect.left + rect.width / 2;
+      const clientY = rect.top + rect.height / 2;
+      const target = document.elementFromPoint(clientX, clientY);
+      if (!target || !submit.contains(target)) throw Error("Nút mũi tên tạo ảnh đang bị che trong Flow.");
+      const event = {bubbles:true, cancelable:true, composed:true, clientX, clientY, button:0};
+      target.dispatchEvent(new PointerEvent("pointerdown", {...event, pointerId:1, pointerType:"mouse", isPrimary:true, buttons:1}));
+      target.dispatchEvent(new MouseEvent("mousedown", {...event, buttons:1}));
+      submit.focus({preventScroll:true});
+      target.dispatchEvent(new PointerEvent("pointerup", {...event, pointerId:1, pointerType:"mouse", isPrimary:true}));
+      target.dispatchEvent(new MouseEvent("mouseup", event));
+      target.dispatchEvent(new MouseEvent("click", {...event, detail:1}));
       const submitted = await waitFor(() => !field.isConnected
         || !(field.value ?? field.innerText ?? field.textContent ?? "").trim()
         || candidates().some(image => !before.has(image.currentSrc)), 12);
