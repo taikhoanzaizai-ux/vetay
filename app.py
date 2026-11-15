@@ -15,7 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "VeTay"
-VERSION = "0.2.13"
+VERSION = "0.2.14"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -131,22 +131,6 @@ def prepare_audio(script, voice, folder):
     ffmpeg("-i", voice, "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", wav)
     return wav
 
-def normalize_flow_url(value):
-    from urllib.parse import urlsplit, urlunsplit
-    value = (value or "").strip().strip('<>"“”').strip()
-    if not value:
-        raise ValueError("Ô Đường dẫn dự án Google Flow đang trống. Hãy dán link từ thanh địa chỉ trong dự án.")
-    if "://" not in value:
-        value = "https://" + value
-    parsed = urlsplit(value)
-    allowed = {"labs.google", "flow.google", "flow.google.com"}
-    if (parsed.scheme != "https" or parsed.hostname not in allowed
-        or parsed.username or parsed.password or parsed.port not in (None, 443)):
-        raise ValueError("Link Flow phải dùng HTTPS và có tên miền flow.google.com, flow.google hoặc labs.google.")
-    if any(character.isspace() for character in value):
-        raise ValueError("Hãy dán riêng đường dẫn Flow, không kèm tiêu đề hoặc văn bản khác.")
-    return urlunsplit(("https", parsed.hostname, parsed.path, parsed.query, parsed.fragment))
-
 def render_folder(voice, pictures, plan, destination, report, ratio="9:16"):
     from PIL import Image, ImageOps
     import numpy as np
@@ -237,17 +221,13 @@ def update():
             LOCK.release()
 
 
-def open_chrome_flow(url, token):
-    from urllib.parse import urlsplit, urlunsplit
-    parsed = urlsplit(normalize_flow_url(url))
-    if parsed.hostname not in {"flow.google.com", "labs.google"}:
-        raise ValueError("Dùng link dự án flow.google.com hoặc labs.google để tiện ích Chrome nhận được tác vụ.")
+def open_chrome_flow(token):
     candidates = [Path(os.environ[key]) / "Google/Chrome/Application/chrome.exe"
                   for key in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA") if os.environ.get(key)]
     chrome = next((path for path in candidates if path.is_file()), None)
     if chrome is None:
         raise RuntimeError("Không tìm thấy Google Chrome trên máy.")
-    project = urlunsplit(parsed._replace(fragment="vetay=" + token))
+    project = "https://flow.google.com/#vetay=" + token
     subprocess.Popen([str(chrome), "--new-tab", project])
 
 class ChromeFlowBridge:
@@ -334,18 +314,18 @@ class ChromeFlowBridge:
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server
 
-    def images(self, prompts, folder, report, url):
+    def images(self, prompts, folder, report):
         state = {"id": uuid.uuid4().hex, "prompts": prompts, "folder": folder,
                  "paths": [], "event": threading.Event(), "error": None}
         with self.guard:
             self.token = uuid.uuid4().hex
             self.job = state
         try:
-            open_chrome_flow(url, self.token)
-            report("Đã mở dự án trong Chrome. Đang chờ tiện ích tự kết nối…")
+            open_chrome_flow(self.token)
+            report("Đã mở Google Flow. Đang chờ tiện ích tạo dự án mới…")
             while True:
                 if not state["event"].wait(240):
-                    raise RuntimeError("Hết thời gian chờ Chrome. Kiểm tra tiện ích Vẽ Tay bản 1.1.0, tài khoản Flow và chế độ tạo ảnh.")
+                    raise RuntimeError("Hết thời gian chờ Chrome. Kiểm tra tiện ích Vẽ Tay bản 1.2.0, tài khoản Flow và chế độ tạo ảnh.")
                 with self.guard:
                     state["event"].clear()
                     if state["error"]:
@@ -363,7 +343,7 @@ def ui(check=False):
     DATA.mkdir(parents=True, exist_ok=True)
     bridge = ChromeFlowBridge()
     chrome_server = None
-    def run(script, voice, pictures, provider, url, ratio, render, progress=gr.Progress()):
+    def run(script, voice, pictures, provider, ratio, render, progress=gr.Progress()):
         def report(message):
             progress(None, desc=message)
         if not LOCK.acquire(blocking=False):
@@ -399,7 +379,7 @@ def ui(check=False):
                     if chrome_server is None:
                         raise RuntimeError("Cổng kết nối Chrome 7877 đang bận. Đóng các bản Vẽ Tay khác rồi mở lại.")
                     yield rows, None, "Đang mở Google Flow và kết nối tự động với tiện ích Chrome…"
-                    pictures = bridge.images([row[-1] for row in rows], folder, report, url)
+                    pictures = bridge.images([row[-1] for row in rows], folder, report)
 
                 if not pictures:
                     raise ValueError("Chọn ảnh theo thứ tự cảnh hoặc chọn Google Flow.")
@@ -415,10 +395,10 @@ def ui(check=False):
             LOCK.release()
 
     def analyze(script, voice, ratio):
-        yield from run(script, voice, None, None, None, ratio, False)
+        yield from run(script, voice, None, None, ratio, False)
 
-    def generate_video(script, voice, pictures, provider, url, ratio):
-        yield from run(script, voice, pictures, provider, url, ratio, True)
+    def generate_video(script, voice, pictures, provider, ratio):
+        yield from run(script, voice, pictures, provider, ratio, True)
 
     css = "body, .gradio-container, button, textarea, input { font-family: 'Segoe UI', Arial, sans-serif !important; }"
     with gr.Blocks(title="Vẽ Tay") as app:
@@ -433,7 +413,6 @@ def ui(check=False):
             with gr.Column():
                 provider = gr.Radio([("Google Flow qua tiện ích Chrome", "chrome"), ("Ảnh có sẵn", "files")],
                                     value="chrome", label="Nguồn ảnh minh họa")
-                url = gr.Textbox(label="Đường dẫn dự án Google Flow", placeholder="https://flow.google.com/… hoặc link dự án Labs Flow", info="Vẽ Tay tự mở Chrome và gửi prompt theo cảnh. Cài tiện ích 1.1.0 và đăng nhập Flow trong Chrome một lần.")
 
                 pictures = gr.File(label="Ảnh có sẵn theo thứ tự cảnh", file_count="multiple",
                                    file_types=["image"], type="filepath")
@@ -449,7 +428,7 @@ def ui(check=False):
         status = gr.Textbox(label="Trạng thái cập nhật", interactive=False)
         gr.Button("Cập nhật qua GitHub").click(update, outputs=status)
         analysis.click(analyze, [script, voice, ratio], [table, video, task])
-        generate.click(generate_video, [script, voice, pictures, provider, url, ratio], [table, video, task])
+        generate.click(generate_video, [script, voice, pictures, provider, ratio], [table, video, task])
     if check:
         engine()
         print(f"VeTay {VERSION}: {len(app.config['components'])} controls.")
