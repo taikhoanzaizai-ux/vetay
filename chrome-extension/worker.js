@@ -20,7 +20,16 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
       return {};
     }
     if (!flowTab(sender.tab?.url)) throw Error("Chỉ nhận yêu cầu từ tab Flow.");
-    const {pairing} = await chrome.storage.session.get("pairing");
+    const key = "pairing:" + sender.tab.id;
+    if (m.op === "pair") {
+      if (!/^[a-f0-9]{32}$/.test(m.token || "")) throw Error("Mã kết nối không hợp lệ.");
+      const job = await api(m.token, "/next");
+      if (job.done) throw Error("Vẽ Tay chưa có cảnh chờ.");
+      await chrome.storage.session.set({[key]:m.token});
+      return job;
+    }
+    const saved = await chrome.storage.session.get([key, "pairing"]);
+    const pairing = saved[key] || saved.pairing;
     if (m.op === "next") return api(pairing,"/next");
     if (m.op === "error") return api(pairing,"/error",JSON.stringify({message:m.message}));
     if (m.op === "image" && /^[a-f0-9]{32}$/.test(m.job) && Number.isInteger(m.index)) {
@@ -41,3 +50,4 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
   })().then(result=>reply({ok:true,result}),error=>reply({ok:false,error:error.message}));
   return true;
 });
+chrome.tabs.onRemoved.addListener(tabId => chrome.storage.session.remove("pairing:" + tabId));
