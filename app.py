@@ -21,6 +21,14 @@ RELEASE_API = "https://api.github.com/repos/taikhoanzaizai-ux/vetay/releases/lat
 if (ROOT / "ffmpeg.exe").is_file():
     os.environ["FFMPEG_BINARY"] = str(ROOT / "ffmpeg.exe")
 LOCK = threading.Lock()
+VIDEO_SIZES = {
+    "9:16": (1080, 1920),
+    "16:9": (1920, 1080),
+    "1:1": (1080, 1080),
+    "4:5": (1080, 1350),
+    "4:3": (1440, 1080),
+    "21:9": (2520, 1080),
+}
 
 def engine():
     path = ROOT / "engine"
@@ -63,7 +71,7 @@ def scenes(parts, seconds, maximum):
     return [(round(start * 24), round((result[i+1][0] if i+1 < len(result) else seconds) * 24), text)
             for i, (start, text) in enumerate(result)]
 
-def prompt_for(text):
+def prompt_for(text, ratio="9:16"):
     rules = (
         (r"cà phê|ăn vặt|đồ uống", "ly cà phê và món ăn nhẹ đặt cạnh ví tiền"),
         (r"tiết kiệm|dành dụm", "hũ tiết kiệm, bàn tay bỏ đồng xu vào hũ"),
@@ -74,7 +82,7 @@ def prompt_for(text):
     visuals = next((art for key, art in rules if re.search(key, text, re.I)), "")
     direction = (f"Gợi ý hình ảnh trọng tâm: {visuals}. " if visuals else
                  "Chọn một chủ thể và một hành động cụ thể có trong lời đọc. ")
-    return ("Tạo một ảnh minh họa dọc 9:16 để chuyển thành video vẽ tay. "
+    return (f"Tạo một ảnh minh họa tỷ lệ {ratio} để chuyển thành video vẽ tay. "
             "Nền trắng trơn, đường viền đậm rõ, ít chi tiết, chủ thể tách nền, "
             "màu xanh ngọc và vàng nhạt. Không chữ, số, logo hoặc watermark. "
             + direction + "Dùng lời đọc sau làm ngữ cảnh, không chép thành chữ trên ảnh: " + text)
@@ -85,8 +93,8 @@ def timecode(frame):
     seconds, fraction = divmod(remainder, 1000)
     return f"{minutes:02}:{seconds:02}.{fraction:03}"
 
-def scene_rows(plan):
-    return [[i, timecode(start), timecode(end), round((end-start)/24, 3), text, prompt_for(text)]
+def scene_rows(plan, ratio="9:16"):
+    return [[i, timecode(start), timecode(end), round((end-start)/24, 3), text, prompt_for(text, ratio)]
             for i, (start, end, text) in enumerate(plan, 1)]
 
 def prepare_audio(script, voice, folder):
@@ -141,10 +149,12 @@ def flow_images(url, model, prompts, folder, report):
         finally:
             browser.close()
 
-def render_folder(voice, pictures, plan, destination, report):
+def render_folder(voice, pictures, plan, destination, report, ratio="9:16"):
     from PIL import Image, ImageOps
     import numpy as np
     path, render_video, Settings = engine()
+    width, height = VIDEO_SIZES[ratio]
+    preview_width, preview_height = ((size * 2 // 5) // 2 * 2 for size in (width, height))
     if len(pictures) < len(plan):
         raise ValueError(f"Cần {len(plan)} ảnh, hiện có {len(pictures)}.")
     with tempfile.TemporaryDirectory(prefix="vetay-", dir=destination.parent) as work:
@@ -153,10 +163,10 @@ def render_folder(voice, pictures, plan, destination, report):
         for i, ((start, end, _), picture) in enumerate(zip(plan, pictures)):
             report(f"Whiteboard Animation VI: cảnh {i+1}/{len(plan)}…")
             with Image.open(picture) as raw:
-                art = ImageOps.contain(ImageOps.exif_transpose(raw).convert("RGB"), (432, 768))
-            canvas = Image.new("RGB", (432, 768), "white")
-            canvas.paste(art, ((432-art.width)//2, (768-art.height)//2))
-            settings = Settings(device="cpu", encoder="cpu", width=432, height=768, fps=24,
+                art = ImageOps.contain(ImageOps.exif_transpose(raw).convert("RGB"), (preview_width, preview_height))
+            canvas = Image.new("RGB", (preview_width, preview_height), "white")
+            canvas.paste(art, ((preview_width-art.width)//2, (preview_height-art.height)//2))
+            settings = Settings(device="cpu", encoder="cpu", width=preview_width, height=preview_height, fps=24, fit="contain",
                                 duration=(end-start)/24, draw_percent=70, mode="e",
                                 subject_first=(path / "assets/v181d/model.safetensors").is_file())
             clip, _ = render_video(np.array(canvas), settings, output_dir=work)
@@ -165,7 +175,7 @@ def render_folder(voice, pictures, plan, destination, report):
         listing.write_text("".join(f"file '{clip.name}'\n" for clip in clips), encoding="utf-8")
         output = work / "complete.mp4"
         ffmpeg("-f", "concat", "-safe", "0", "-i", listing, "-i", voice, "-map", "0:v", "-map", "1:a",
-               "-vf", "scale=1080:1920:flags=lanczos", "-c:v", "libx264", "-preset", "veryfast",
+               "-vf", f"scale={width}:{height}:flags=lanczos", "-c:v", "libx264", "-preset", "veryfast",
                "-pix_fmt", "yuv420p", "-c:a", "aac", "-af", "apad", "-shortest", "-movflags", "+faststart", output)
         os.replace(output, destination)
     return str(destination)
@@ -220,7 +230,7 @@ def update():
 def ui(check=False):
     import gradio as gr
     DATA.mkdir(parents=True, exist_ok=True)
-    def run(script, voice, pictures, provider, url, model, maximum, render, progress=gr.Progress()):
+    def run(script, voice, pictures, provider, url, model, maximum, ratio, render, progress=gr.Progress()):
         def report(message):
             progress(None, desc=message)
         if not LOCK.acquire(blocking=False):
@@ -233,7 +243,7 @@ def ui(check=False):
                 wav = prepare_audio(script, voice, folder)
                 report("Đang nhận dạng lời đọc và chia cảnh…")
                 plan = scenes(transcribe(wav), duration(wav), int(maximum))
-                rows = scene_rows(plan)
+                rows = scene_rows(plan, ratio)
                 yield rows, None, f"Đã phân tích {len(rows)} cảnh và viết prompt."
                 if not render:
                     return
@@ -242,7 +252,7 @@ def ui(check=False):
                 if not pictures:
                     raise ValueError("Chọn ảnh theo thứ tự cảnh hoặc chọn Google Flow.")
                 dest = DATA / f"VeTay-{uuid.uuid4().hex[:8]}.mp4"
-                path = render_folder(wav, pictures, plan, dest, report)
+                path = render_folder(wav, pictures, plan, dest, report, ratio)
                 yield rows, path, f"Đã xuất MP4 · {len(rows)} cảnh."
         except subprocess.CalledProcessError as error:
             detail = (error.stderr or b"").decode("utf-8", errors="replace").strip()
@@ -252,11 +262,11 @@ def ui(check=False):
         finally:
             LOCK.release()
 
-    def analyze(script, voice, maximum):
-        yield from run(script, voice, None, None, None, None, maximum, False)
+    def analyze(script, voice, maximum, ratio):
+        yield from run(script, voice, None, None, None, None, maximum, ratio, False)
 
-    def generate_video(script, voice, pictures, provider, url, model, maximum):
-        yield from run(script, voice, pictures, provider, url, model, maximum, True)
+    def generate_video(script, voice, pictures, provider, url, model, maximum, ratio):
+        yield from run(script, voice, pictures, provider, url, model, maximum, ratio, True)
 
     css = "body, .gradio-container, button, textarea, input { font-family: 'Segoe UI', Arial, sans-serif !important; }"
     with gr.Blocks(title="Vẽ Tay") as app:
@@ -266,6 +276,8 @@ def ui(check=False):
                 script = gr.Textbox(label="Kịch bản tiếng Việt", lines=5)
                 voice = gr.Audio(label="Bản thu lời đọc (MP3 / WAV)", sources=["upload"], type="filepath")
                 maximum = gr.Slider(1, 30, value=5, step=1, label="Số cảnh tối đa")
+                ratio = gr.Dropdown([(f"{key} · {w} × {h}", key) for key, (w,h) in VIDEO_SIZES.items()],
+                                    value="9:16", label="Tỷ lệ video")
             with gr.Column():
                 provider = gr.Radio([("Google Flow (thử nghiệm)", "flow"), ("Ảnh có sẵn", "files")],
                                     value="flow", label="Nguồn ảnh minh họa")
@@ -285,8 +297,8 @@ def ui(check=False):
         video = gr.Video(label="Video MP4")
         status = gr.Textbox(label="Trạng thái cập nhật", interactive=False)
         gr.Button("Cập nhật qua GitHub").click(update, outputs=status)
-        analysis.click(analyze, [script, voice, maximum], [table, video, task])
-        generate.click(generate_video, [script, voice, pictures, provider, url, model, maximum], [table, video, task])
+        analysis.click(analyze, [script, voice, maximum, ratio], [table, video, task])
+        generate.click(generate_video, [script, voice, pictures, provider, url, model, maximum, ratio], [table, video, task])
     if check:
         engine()
         print(f"VeTay {VERSION}: {len(app.config['components'])} controls.")
@@ -305,10 +317,11 @@ if __name__ == "__main__":
     cli = argparse.ArgumentParser()
     cli.add_argument("--smoke", nargs=3, metavar=("VOICE", "IMAGE", "OUTPUT"))
     cli.add_argument("--check", action="store_true")
+    cli.add_argument("--ratio", choices=VIDEO_SIZES, default="9:16")
     args = cli.parse_args()
     if args.smoke:
         voice, image, out = map(lambda item: Path(item).resolve(), args.smoke)
-        render_folder(voice, [image], [(0, 48, "Smoke test")], out, print)
+        render_folder(voice, [image], [(0, 48, "Smoke test")], out, print, args.ratio)
     else:
         ui(check=args.check)
 
