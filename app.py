@@ -54,22 +54,42 @@ def duration(path):
 def transcribe(voice):
     from faster_whisper import WhisperModel
     model = WhisperModel("small", device="cpu", compute_type="int8", download_root=str(DATA / "models"))
-    parts, _ = model.transcribe(str(voice), language="vi", vad_filter=True)
-    return [(float(p.start), p.text.strip()) for p in parts if p.text.strip()]
+    segments, _ = model.transcribe(str(voice), language="vi", vad_filter=True, word_timestamps=True)
+    return [(float(word.start), float(word.end), word.word)
+            for segment in segments for word in (segment.words or ()) if word.word.strip()]
 
-def scenes(parts, seconds, maximum):
-    if not parts or seconds <= 0:
+def scenes(words, seconds):
+    if not words or seconds <= 0:
         raise ValueError("Không tìm thấy lời đọc hoặc âm thanh trống.")
-    target = max(4, seconds / maximum)
-    result = [(0.0, parts[0][1])]
-    for start, text in parts[1:]:
-        previous, combined = result[-1]
-        if len(result) < maximum and start - previous >= target and seconds - start >= 2:
-            result.append((start, text))
-        else:
-            result[-1] = (previous, combined + " " + text)
-    return [(round(start * 24), round((result[i+1][0] if i+1 < len(result) else seconds) * 24), text)
-            for i, (start, text) in enumerate(result)]
+    blocks = [(0.0, [])]
+    previous_end = 0.0
+    previous_word = ""
+    for start, end, word in words:
+        scene_start, current = blocks[-1]
+        elapsed = start - scene_start
+        pause = start - previous_end
+        sentence_end = bool(re.search(r'[.!?…]+[)"”\']*$', previous_word.rstrip()))
+        can_cut = current and seconds - start >= 2
+        if can_cut and (elapsed >= 14 or (elapsed >= 4.5 and pause >= .55)
+                        or (elapsed >= 6.5 and sentence_end)):
+            current = []
+            blocks.append((start, current))
+        current.append(word)
+        previous_end = end
+        previous_word = word
+    end_frame = round(seconds * 24)
+    result = []
+    for i, (start, words) in enumerate(blocks):
+        first = round(start * 24)
+        last = round(blocks[i+1][0] * 24) if i+1 < len(blocks) else end_frame
+        text = "".join(words).strip()
+        # Whiteboard Animation VI accepts up to 120 seconds for a single render.
+        while last - first > 120 * 24:
+            result.append((first, first + 120 * 24, text))
+            first += 120 * 24
+        if last > first:
+            result.append((first, last, text))
+    return result
 
 def prompt_for(text, ratio="9:16"):
     rules = (
@@ -230,7 +250,7 @@ def update():
 def ui(check=False):
     import gradio as gr
     DATA.mkdir(parents=True, exist_ok=True)
-    def run(script, voice, pictures, provider, url, model, maximum, ratio, render, progress=gr.Progress()):
+    def run(script, voice, pictures, provider, url, model, ratio, render, progress=gr.Progress()):
         def report(message):
             progress(None, desc=message)
         if not LOCK.acquire(blocking=False):
@@ -242,7 +262,7 @@ def ui(check=False):
                 report("Đang chuẩn bị lời đọc…")
                 wav = prepare_audio(script, voice, folder)
                 report("Đang nhận dạng lời đọc và chia cảnh…")
-                plan = scenes(transcribe(wav), duration(wav), int(maximum))
+                plan = scenes(transcribe(wav), duration(wav))
                 rows = scene_rows(plan, ratio)
                 yield rows, None, f"Đã phân tích {len(rows)} cảnh và viết prompt."
                 if not render:
@@ -262,11 +282,11 @@ def ui(check=False):
         finally:
             LOCK.release()
 
-    def analyze(script, voice, maximum, ratio):
-        yield from run(script, voice, None, None, None, None, maximum, ratio, False)
+    def analyze(script, voice, ratio):
+        yield from run(script, voice, None, None, None, None, ratio, False)
 
-    def generate_video(script, voice, pictures, provider, url, model, maximum, ratio):
-        yield from run(script, voice, pictures, provider, url, model, maximum, ratio, True)
+    def generate_video(script, voice, pictures, provider, url, model, ratio):
+        yield from run(script, voice, pictures, provider, url, model, ratio, True)
 
     css = "body, .gradio-container, button, textarea, input { font-family: 'Segoe UI', Arial, sans-serif !important; }"
     with gr.Blocks(title="Vẽ Tay") as app:
@@ -275,7 +295,7 @@ def ui(check=False):
             with gr.Column():
                 script = gr.Textbox(label="Kịch bản tiếng Việt", lines=5)
                 voice = gr.Audio(label="Bản thu lời đọc (MP3 / WAV)", sources=["upload"], type="filepath")
-                maximum = gr.Slider(1, 30, value=5, step=1, label="Số cảnh tối đa")
+
                 ratio = gr.Dropdown([(f"{key} · {w} × {h}", key) for key, (w,h) in VIDEO_SIZES.items()],
                                     value="9:16", label="Tỷ lệ video")
             with gr.Column():
@@ -297,8 +317,8 @@ def ui(check=False):
         video = gr.Video(label="Video MP4")
         status = gr.Textbox(label="Trạng thái cập nhật", interactive=False)
         gr.Button("Cập nhật qua GitHub").click(update, outputs=status)
-        analysis.click(analyze, [script, voice, maximum, ratio], [table, video, task])
-        generate.click(generate_video, [script, voice, pictures, provider, url, model, maximum, ratio], [table, video, task])
+        analysis.click(analyze, [script, voice, ratio], [table, video, task])
+        generate.click(generate_video, [script, voice, pictures, provider, url, model, ratio], [table, video, task])
     if check:
         engine()
         print(f"VeTay {VERSION}: {len(app.config['components'])} controls.")
