@@ -1,0 +1,36 @@
+name: Windows standalone installer
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/windows.yml']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+      - name: Build installer
+        shell: pwsh
+        run: ./Build_Windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VeTay-Windows-Setup
+          path: dist/VeTay-Windows-Setup.exe
+          if-no-files-found: error
+      - name: Publish installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content version.txt -Raw).Trim()
+          gh release create "v$version" dist/VeTay-Windows-Setup.exe --target $env:GITHUB_SHA --title "Ve Tay $version" --generate-notes
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
