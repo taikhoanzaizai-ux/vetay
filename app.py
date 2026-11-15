@@ -14,8 +14,8 @@ import threading
 import uuid
 
 ROOT = Path(__file__).resolve().parent
-DATA = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "VeTay"
-VERSION = "0.2.15"
+DATA = ROOT / "Data"
+VERSION = "0.2.16"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -31,6 +31,39 @@ VIDEO_SIZES = {
     "4:3": (1440, 1080),
     "21:9": (2520, 1080),
 }
+
+def prepare_data():
+    DATA.mkdir(parents=True, exist_ok=True)
+    temp = DATA / "Temp"
+    temp.mkdir(exist_ok=True)
+    tempfile.tempdir = str(temp)
+    os.environ["GRADIO_TEMP_DIR"] = str(temp / "gradio")
+    os.environ["HF_HOME"] = str(DATA / "huggingface")
+
+    local = os.environ.get("LOCALAPPDATA")
+    marker = DATA / ".migration-complete"
+    if not local or marker.exists():
+        return
+    legacy = Path(local) / "VeTay"
+    if legacy.resolve() == DATA.resolve() or not legacy.is_dir():
+        return
+    files = list(legacy.glob("VeTay-*.mp4"))
+    for name in ("models", "chrome-extension", "huggingface"):
+        folder = legacy / name
+        if folder.is_dir():
+            files.extend(file for file in folder.rglob("*") if file.is_file())
+    for source in files:
+        target = DATA / source.relative_to(legacy)
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=target.parent) as staging:
+            copy = Path(staging) / source.name
+            shutil.copy2(source, copy)
+            if not target.exists():
+                copy.replace(target)
+    marker.touch()
+
 
 def engine():
     path = ROOT / "engine"
@@ -421,8 +454,8 @@ class ChromeFlowBridge:
                 self.job = None
 
 def ui(check=False):
+    prepare_data()
     import gradio as gr
-    DATA.mkdir(parents=True, exist_ok=True)
     bridge = ChromeFlowBridge()
     chrome_server = None
     def run(script, voice, pictures, provider, ratio, render, progress=gr.Progress()):
