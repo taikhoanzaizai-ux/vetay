@@ -15,7 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "VeTay"
-VERSION = "0.2.11"
+VERSION = "0.2.12"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -332,13 +332,26 @@ def update():
             LOCK.release()
 
 
+def open_chrome_flow(url, token):
+    from urllib.parse import urlsplit, urlunsplit
+    parsed = urlsplit(normalize_flow_url(url))
+    if parsed.hostname not in {"flow.google.com", "labs.google"}:
+        raise ValueError("Dùng link dự án flow.google.com hoặc labs.google để tiện ích Chrome nhận được tác vụ.")
+    candidates = [Path(os.environ[key]) / "Google/Chrome/Application/chrome.exe"
+                  for key in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA") if os.environ.get(key)]
+    chrome = next((path for path in candidates if path.is_file()), None)
+    if chrome is None:
+        raise RuntimeError("Không tìm thấy Google Chrome trên máy.")
+    project = urlunsplit(parsed._replace(fragment="vetay=" + token))
+    subprocess.Popen([str(chrome), "--new-tab", project])
+
 class ChromeFlowBridge:
     def __init__(self):
         self.token = uuid.uuid4().hex
         self.guard = threading.Lock()
         self.job = None
 
-    def serve(self):
+    def serve(self, port=7877):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         bridge = self
         class Handler(BaseHTTPRequestHandler):
@@ -403,20 +416,31 @@ class ChromeFlowBridge:
                 except Exception as error:
                     self.response(400, str(error)[:300])
 
-        server = ThreadingHTTPServer(("127.0.0.1", 7877), Handler)
+        import socket
+        class ExclusiveServer(ThreadingHTTPServer):
+            allow_reuse_address = False
+
+            def server_bind(self):
+                if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                    self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                super().server_bind()
+
+        server = ExclusiveServer(("127.0.0.1", port), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server
 
-    def images(self, prompts, folder, report):
+    def images(self, prompts, folder, report, url):
         state = {"id": uuid.uuid4().hex, "prompts": prompts, "folder": folder,
                  "paths": [], "event": threading.Event(), "error": None}
         with self.guard:
+            self.token = uuid.uuid4().hex
             self.job = state
         try:
-            report("Đang chờ tiện ích Chrome. Mở tab dự án Flow và bấm Chạy các cảnh đang chờ.")
+            open_chrome_flow(url, self.token)
+            report("Đã mở dự án trong Chrome. Đang chờ tiện ích tự kết nối…")
             while True:
                 if not state["event"].wait(240):
-                    raise RuntimeError("Hết thời gian chờ tiện ích Chrome. Kiểm tra mã kết nối, tab Flow và tiện ích.")
+                    raise RuntimeError("Hết thời gian chờ Chrome. Kiểm tra tiện ích Vẽ Tay bản 1.1.0, tài khoản Flow và chế độ tạo ảnh.")
                 with self.guard:
                     state["event"].clear()
                     if state["error"]:
@@ -469,8 +493,8 @@ def ui(check=False):
                 if provider == "chrome":
                     if chrome_server is None:
                         raise RuntimeError("Cổng kết nối Chrome 7877 đang bận. Đóng các bản Vẽ Tay khác rồi mở lại.")
-                    yield rows, None, "Đang chờ tiện ích Chrome. Mở tab Flow và bấm Chạy các cảnh đang chờ."
-                    pictures = bridge.images([row[-1] for row in rows], folder, report)
+                    yield rows, None, "Đang mở Google Flow và kết nối tự động với tiện ích Chrome…"
+                    pictures = bridge.images([row[-1] for row in rows], folder, report, url)
                 if provider == "flow":
                     pictures = list(flow_images((url or "").strip(), model, [row[-1] for row in rows], folder, report))
                     yield rows, None, f"Google Flow đã tạo ảnh {len(pictures)}/{len(rows)}."
@@ -506,10 +530,10 @@ def ui(check=False):
             with gr.Column():
                 provider = gr.Radio([("Google Flow qua tiện ích Chrome", "chrome"), ("Google Flow qua Edge (thử nghiệm)", "flow"), ("Ảnh có sẵn", "files")],
                                     value="chrome", label="Nguồn ảnh minh họa")
-                url = gr.Textbox(label="Đường dẫn dự án Google Flow", placeholder="https://flow.google.com/… hoặc link dự án Labs Flow", info="Vẽ Tay tự gửi prompt theo từng cảnh. Lần đầu, đăng nhập trong cửa sổ Edge do ứng dụng mở.")
+                url = gr.Textbox(label="Đường dẫn dự án Google Flow", placeholder="https://flow.google.com/… hoặc link dự án Labs Flow", info="Vẽ Tay tự mở Chrome và gửi prompt theo cảnh. Cài tiện ích 1.1.0 và đăng nhập Flow trong Chrome một lần.")
                 model = gr.Radio(["Nano Banana 2.1", "Nano Banana 2 Lite"], value="Nano Banana 2.1",
                                  label="Model ảnh trong Google Flow")
-                gr.Textbox(value=bridge.token, label="Mã kết nối tiện ích Chrome", interactive=False, buttons=["copy"])
+
                 flow_login = gr.Button("Mở Edge để đăng nhập Flow")
                 pictures = gr.File(label="Ảnh có sẵn theo thứ tự cảnh", file_count="multiple",
                                    file_types=["image"], type="filepath")
