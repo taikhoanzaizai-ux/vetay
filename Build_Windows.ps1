@@ -28,8 +28,8 @@ Copy-Item -LiteralPath (Join-Path $ffmpegDir.FullName 'bin\ffmpeg.exe') -Destina
 Copy-Item -LiteralPath (Join-Path $ffmpegDir.FullName 'LICENSE') -Destination (Join-Path $bundle 'FFmpeg-LICENSE.txt')
 Copy-Item -LiteralPath app.py,README.md,version.txt -Destination $bundle
 $iconPath = Join-Path $bundle 'VeTay.ico'
-python -m pip install Pillow
+python -m pip install 'Pillow>=11,<13'
 python -c "from PIL import Image,ImageDraw; im=Image.new('RGBA',(256,256)); d=ImageDraw.Draw(im); d.rounded_rectangle((12,12,244,244),44,fill='#08795d'); d.line(((50,178),(90,135),(128,155),(200,62)),fill='white',width=18); im.save(r'$iconPath')"
 & (Join-Path $runtime 'python.exe') -c "import torch, gradio, webview, faster_whisper, edge_tts, playwright.sync_api; print(torch.__version__)"
-& (Join-Path $runtime 'python.exe') app.py --check
+& (Join-Path $runtime 'python.exe') (Join-Path $bundle 'app.py') --check
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$((Get-Content version.txt -Raw).Trim())" installer.iss
