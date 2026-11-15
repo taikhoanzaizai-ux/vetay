@@ -1,6 +1,5 @@
 (() => {
   const pairing = /^#vetay=([a-f0-9]{32})$/.exec(location.hash)?.[1];
-  if (pairing) history.replaceState(history.state, "", location.pathname + location.search);
   if (window.__veTayRunning) return;
   window.__veTayRunning = true;
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve,ms));
@@ -138,6 +137,7 @@
   async function connect() {
     const state = await send(pairing ? {op:"pair",token:pairing} : {op:"resume"});
     if (state.done) return;
+    if (pairing) history.replaceState(history.state, "", location.pathname + location.search); 
     if (document.readyState === "loading") await new Promise(resolve=>document.addEventListener("DOMContentLoaded",resolve,{once:true}));
     if (!projectOpen()) {
       if (!pairing) throw Error("Flow vẫn ở trang chủ sau khi tạo dự án. Kiểm tra đăng nhập rồi chạy lại.");
@@ -156,6 +156,6 @@
     await run();
   }
   connect().catch(async error => {
-    try {await send({op:"error",message:error.message});} catch {}
+    try {await send({op:"error",message:error.message});} catch { console.warn("Vẽ Tay: ghép nối hoặc gửi trạng thái thất bại.", error.message); }
   }).finally(()=>{window.__veTayRunning=false;});
 })();
