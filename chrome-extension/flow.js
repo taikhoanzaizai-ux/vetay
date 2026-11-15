@@ -1,7 +1,7 @@
 (() => {
   const pairing = /^#vetay=([a-f0-9]{32})$/.exec(location.hash)?.[1];
-  if (pairing) history.replaceState(history.state, "", location.pathname + location.search);
-  if (!pairing && document.readyState === "loading") return;
+  if (!pairing) return;
+  history.replaceState(history.state, "", location.pathname + location.search);
   if (window.__veTayRunning) return;
   window.__veTayRunning = true;
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve,ms));
