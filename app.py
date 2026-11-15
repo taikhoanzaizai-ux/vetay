@@ -15,7 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "VeTay"
-VERSION = "0.2.12"
+VERSION = "0.2.13"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -23,7 +23,6 @@ if (ROOT / "ffmpeg.exe").is_file():
     os.environ["FFMPEG_BINARY"] = str(ROOT / "ffmpeg.exe")
 LOCK = threading.Lock()
 LAST_ANALYSIS = {}
-FLOW_LOGIN_PROCESS = None
 VIDEO_SIZES = {
     "9:16": (1080, 1920),
     "16:9": (1920, 1080),
@@ -147,100 +146,6 @@ def normalize_flow_url(value):
     if any(character.isspace() for character in value):
         raise ValueError("Hãy dán riêng đường dẫn Flow, không kèm tiêu đề hoặc văn bản khác.")
     return urlunsplit(("https", parsed.hostname, parsed.path, parsed.query, parsed.fragment))
-
-def open_flow_sign_in(url):
-    global FLOW_LOGIN_PROCESS
-    if LOCK.locked():
-        return "Đợi tác vụ đang chạy kết thúc trước khi mở cửa sổ đăng nhập."
-    try:
-        url = normalize_flow_url(url or "https://flow.google.com/")
-        candidates = [Path(os.environ[key]) / "Microsoft/Edge/Application/msedge.exe"
-                      for key in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA") if os.environ.get(key)]
-        edge = next((path for path in candidates if path.is_file()), None)
-        if edge is None:
-            raise RuntimeError("Không tìm thấy Microsoft Edge.")
-        FLOW_LOGIN_PROCESS = subprocess.Popen([
-            str(edge), f"--user-data-dir={DATA / 'flow-profile'}", "--disable-background-mode", url])
-        return ("Đăng nhập Google trong Edge vừa mở. Sau khi vào được Flow, "
-                "đóng toàn bộ cửa sổ Edge của hồ sơ này rồi bấm Tự tạo video.")
-    except Exception as error:
-        return f"Không mở được Edge: {error}"
-
-def flow_images(url, model, prompts, folder, report):
-    from playwright.sync_api import sync_playwright
-    url = normalize_flow_url(url)
-    report("Đang mở Edge để kết nối Google Flow…")
-    with sync_playwright() as play:
-        busy = ("Cửa sổ Edge đăng nhập Flow của Vẽ Tay vẫn đang mở. "
-                "Trong chính cửa sổ Edge đó, nhấn Alt+F4 rồi bấm lại Tự tạo video. "
-                "Nếu vẫn báo bận, thoát hẳn Edge qua menu ⋯ → Đóng Microsoft Edge.")
-        if FLOW_LOGIN_PROCESS is not None:
-            try:
-                FLOW_LOGIN_PROCESS.wait(timeout=5)
-            except subprocess.TimeoutExpired as error:
-                raise RuntimeError(busy) from error
-        try:
-            browser = play.chromium.launch_persistent_context(
-                str(DATA / "flow-profile"), channel="msedge", headless=False,
-                accept_downloads=True, chromium_sandbox=True, args=["--disable-background-mode"])
-        except Exception as error:
-            detail = str(error)
-            if any(marker in detail.lower() for marker in ("opening in existing browser session",
-                       "profile is already in use", "processsingleton", "user data directory is already in use")):
-                raise RuntimeError(busy) from error
-            raise RuntimeError("Không mở được cửa sổ Flow: " + detail.splitlines()[0]) from error
-        try:
-            page = browser.pages[0] if browser.pages else browser.new_page()
-            page.goto(url, wait_until="domcontentloaded")
-            from urllib.parse import urlsplit
-            if urlsplit(page.url).hostname == "accounts.google.com":
-                raise RuntimeError("Cần đăng nhập trước. Bấm Mở Edge để đăng nhập Flow trong Vẽ Tay.")
-            field = page.locator('textarea:visible, [contenteditable="true"]:visible')
-            report("Đang đợi mở dự án Flow. Nếu được hỏi, hãy đăng nhập Google trong Edge.")
-            field.last.wait_for(timeout=180000)
-            exact_model = re.compile(r"^" + re.escape(model) + r"$", re.I)
-            report(f"Đang kiểm tra model {model} trong Google Flow…")
-            if not page.get_by_text(exact_model).first.is_visible():
-                picker = page.get_by_role("button", name=re.compile(r"Nano Banana|Imagen|Veo|Model|Mô hình", re.I)).filter(visible=True)
-                if picker.count() == 1:
-                    picker.click(timeout=5000)
-                    image_tab = page.get_by_text(re.compile(r"^(Image|Hình ảnh|Ảnh)$", re.I), exact=True).filter(visible=True)
-                    if image_tab.count() == 1:
-                        image_tab.click(timeout=5000)
-                    choice = page.get_by_text(exact_model).filter(visible=True)
-                    if choice.count() == 1:
-                        choice.click(timeout=5000)
-            try:
-                page.get_by_text(exact_model).first.wait_for(timeout=25000)
-            except Exception as error:
-                raise RuntimeError(f"Không thấy {model} trong dự án Flow. Chọn chế độ Ảnh và kiểm tra model có trên tài khoản.") from error
-            for i, prompt in enumerate(prompts):
-                report(f"Flow: đang tạo ảnh {i+1}/{len(prompts)}…")
-                field.last.fill(prompt, timeout=15000)
-                generate = page.get_by_role("button", name=re.compile(r"^(Generate Image|Generate|Tạo hình ảnh|Tạo ảnh)$", re.I))
-                download = page.get_by_role("button", name=re.compile(r"^(Download|Tải xuống)( image| ảnh)?$", re.I))
-                existing = download.element_handles()
-                if generate.count() != 1:
-                    raise RuntimeError("Không nhận ra nút tạo ảnh duy nhất trong Flow. Hãy mở dự án ở chế độ Ảnh.")
-                generate.click(timeout=15000)
-                previous = len(existing)
-                page.wait_for_function(
-                    """n => [...document.querySelectorAll('button')].filter(b =>
-                        /^(Download|Tải xuống)( image| ảnh)?$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim())
-                        ).length > n""", arg=previous, timeout=180000)
-                with page.expect_download(timeout=20000) as event:
-                    candidates = download.element_handles()
-                    new_items = [item for item in candidates if not item.evaluate("(node, old) => old.includes(node)", existing)]
-                    if len(new_items) != 1:
-                        raise RuntimeError("Không xác định được file ảnh mới duy nhất trong Flow.")
-                    new_items[0].click()
-                path = folder / f"flow-{i:02}.png"
-                event.value.save_as(path)
-                yield path
-        except Exception as error:
-            raise RuntimeError(f"Flow dừng: {error}. Kiểm tra đăng nhập, hạn mức và giao diện dự án.") from error
-        finally:
-            browser.close()
 
 def render_folder(voice, pictures, plan, destination, report, ratio="9:16"):
     from PIL import Image, ImageOps
@@ -458,7 +363,7 @@ def ui(check=False):
     DATA.mkdir(parents=True, exist_ok=True)
     bridge = ChromeFlowBridge()
     chrome_server = None
-    def run(script, voice, pictures, provider, url, model, ratio, render, progress=gr.Progress()):
+    def run(script, voice, pictures, provider, url, ratio, render, progress=gr.Progress()):
         def report(message):
             progress(None, desc=message)
         if not LOCK.acquire(blocking=False):
@@ -495,9 +400,7 @@ def ui(check=False):
                         raise RuntimeError("Cổng kết nối Chrome 7877 đang bận. Đóng các bản Vẽ Tay khác rồi mở lại.")
                     yield rows, None, "Đang mở Google Flow và kết nối tự động với tiện ích Chrome…"
                     pictures = bridge.images([row[-1] for row in rows], folder, report, url)
-                if provider == "flow":
-                    pictures = list(flow_images((url or "").strip(), model, [row[-1] for row in rows], folder, report))
-                    yield rows, None, f"Google Flow đã tạo ảnh {len(pictures)}/{len(rows)}."
+
                 if not pictures:
                     raise ValueError("Chọn ảnh theo thứ tự cảnh hoặc chọn Google Flow.")
                 dest = DATA / f"VeTay-{uuid.uuid4().hex[:8]}.mp4"
@@ -512,10 +415,10 @@ def ui(check=False):
             LOCK.release()
 
     def analyze(script, voice, ratio):
-        yield from run(script, voice, None, None, None, None, ratio, False)
+        yield from run(script, voice, None, None, None, ratio, False)
 
-    def generate_video(script, voice, pictures, provider, url, model, ratio):
-        yield from run(script, voice, pictures, provider, url, model, ratio, True)
+    def generate_video(script, voice, pictures, provider, url, ratio):
+        yield from run(script, voice, pictures, provider, url, ratio, True)
 
     css = "body, .gradio-container, button, textarea, input { font-family: 'Segoe UI', Arial, sans-serif !important; }"
     with gr.Blocks(title="Vẽ Tay") as app:
@@ -528,13 +431,10 @@ def ui(check=False):
                 ratio = gr.Dropdown([(f"{key} · {w} × {h}", key) for key, (w,h) in VIDEO_SIZES.items()],
                                     value="9:16", label="Tỷ lệ video")
             with gr.Column():
-                provider = gr.Radio([("Google Flow qua tiện ích Chrome", "chrome"), ("Google Flow qua Edge (thử nghiệm)", "flow"), ("Ảnh có sẵn", "files")],
+                provider = gr.Radio([("Google Flow qua tiện ích Chrome", "chrome"), ("Ảnh có sẵn", "files")],
                                     value="chrome", label="Nguồn ảnh minh họa")
                 url = gr.Textbox(label="Đường dẫn dự án Google Flow", placeholder="https://flow.google.com/… hoặc link dự án Labs Flow", info="Vẽ Tay tự mở Chrome và gửi prompt theo cảnh. Cài tiện ích 1.1.0 và đăng nhập Flow trong Chrome một lần.")
-                model = gr.Radio(["Nano Banana 2.1", "Nano Banana 2 Lite"], value="Nano Banana 2.1",
-                                 label="Model ảnh trong Google Flow")
 
-                flow_login = gr.Button("Mở Edge để đăng nhập Flow")
                 pictures = gr.File(label="Ảnh có sẵn theo thứ tự cảnh", file_count="multiple",
                                    file_types=["image"], type="filepath")
         with gr.Row():
@@ -548,9 +448,8 @@ def ui(check=False):
         video = gr.Video(label="Video MP4")
         status = gr.Textbox(label="Trạng thái cập nhật", interactive=False)
         gr.Button("Cập nhật qua GitHub").click(update, outputs=status)
-        flow_login.click(open_flow_sign_in, inputs=url, outputs=task)
         analysis.click(analyze, [script, voice, ratio], [table, video, task])
-        generate.click(generate_video, [script, voice, pictures, provider, url, model, ratio], [table, video, task])
+        generate.click(generate_video, [script, voice, pictures, provider, url, ratio], [table, video, task])
     if check:
         engine()
         print(f"VeTay {VERSION}: {len(app.config['components'])} controls.")
