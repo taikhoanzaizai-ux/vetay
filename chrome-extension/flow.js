@@ -38,7 +38,14 @@
       || (node.getAttribute("aria-haspopup") && hasRatio.test(labels(node))));
     const options = () => controls().filter(node => !trigger.includes(node) && exact.test(labels(node)));
     const modelSettings = controls().filter(node => /Nano Banana|Imagen/iu.test(labels(node)) && /[x×][1-4]\b/iu.test(labels(node)));
-    if (!options().length && modelSettings.length === 1) modelSettings[0].click();
+    const settings = modelSettings.length === 1 ? modelSettings[0] : controls().find(node => /^(Điều kiện kích hoạt cài đặt|Settings trigger)$/iu.test(caption(node)));
+    let opened = false;
+    if (!options().length && settings) {
+      settings.click();
+      opened = true;
+      const image = await waitFor(() => controls().find(node => node.getAttribute("role") === "radio" && /^(Image|Hình ảnh|Ảnh)$/iu.test(caption(node))), 3);
+      if (image && !selected(image)) image.click();
+    }
     if (!options().length) await waitFor(() => options().length, 3);
     if (!options().length && trigger.length === 1) trigger[0].click();
     const option = await waitFor(() => {
@@ -50,18 +57,25 @@
     if (!trigger.includes(option) && !selected(option)) option.click();
     const single = controls().filter(node => /^[x×]\s*1$/iu.test(caption(node)));
     if (single.length === 1 && !selected(single[0])) single[0].click();
+    if (opened && options().length && settings.isConnected) settings.click();
   }
   async function run() {
     let appliedRatio;
     while (true) {
       const job = await send({op:"next"});
       if (job.done) return;
-      const field = await waitFor(promptField, 25);
+      const agent = [...document.querySelectorAll('[role="checkbox"],input[type="checkbox"]')].find(node => visible(node)
+        && /^(Tác nhân|Agent)$/iu.test((node.getAttribute("aria-label") || node.textContent || "").trim())
+        && (node.checked || node.getAttribute("aria-checked") === "true"));
+      if (agent) { agent.click(); await sleep(300); }
+      let field = await waitFor(promptField, 25);
       if (!field) throw Error("Không xác định được ô prompt duy nhất. Mở trang tạo ảnh trong dự án Flow.");
       const ratio = /^Tạo một ảnh minh họa tỷ lệ (\d+:\d+) /u.exec(job.prompt)?.[1];
       if (ratio && ratio !== appliedRatio) {
         await selectRatio(ratio);
         appliedRatio = ratio;
+        field = await waitFor(promptField, 10);
+        if (!field) throw Error("Không thấy ô prompt sau khi chọn tỷ lệ.");
       }
       field.focus();
       if (field instanceof HTMLTextAreaElement) {
@@ -82,7 +96,7 @@
         generate = buttons.filter(b=>/^(Generate|Tạo)$/i.test(caption(b)));
       if (generate.length === 0) {
         const editor = field.closest("form") || field.parentElement;
-        generate = buttons.filter(button => /^(arrow_forward|send|gửi)$/iu.test(caption(button))
+        generate = buttons.filter(button => /^(arrow_forward|send|gửi|bắt đầu tạo|start generating|start creating)$/iu.test(caption(button))
           && (editor?.contains(button) || field.getBoundingClientRect().bottom <= button.getBoundingClientRect().bottom
             && Math.abs(field.getBoundingClientRect().right - button.getBoundingClientRect().right) < 100));
       }
@@ -138,8 +152,7 @@
     }
     if (!await waitFor(()=>document.querySelector('textarea,[contenteditable="true"]'),45))
       throw Error("Dự án mới chưa hiện ô prompt.");
-    const imageMode=matching(/^(Image|Ảnh|Hình ảnh)$/i);
-    if (imageMode.length===1) imageMode[0].click();
+    
     await run();
   }
   connect().catch(async error => {
