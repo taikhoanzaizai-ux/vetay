@@ -9,8 +9,16 @@
     if (!response?.ok) throw Error(response?.error || "Mất kết nối với Vẽ Tay.");
     return response.result;
   };
-  const candidates = () => [...document.images].filter(img => img.complete && img.naturalWidth >= 384 &&
-    img.naturalHeight >= 384 && visible(img) && /^(blob:|https:\/\/[^/]*\.googleusercontent\.com\/)/i.test(img.currentSrc));
+  function resultImages(card) {
+    return [...card.querySelectorAll("img")].filter(img => {
+      if (!img.complete || !img.naturalWidth || !img.naturalHeight || !visible(img)) return false;
+      const src = img.currentSrc || img.src;
+      const url = new URL(src, location.href);
+      const media = /^(Ô hiển thị hình ảnh của người dùng|User image tile)$/iu.test(img.alt.trim());
+      const original = /^(blob:|https:\/\/[^/]*\.googleusercontent\.com\/)/i.test(src);
+      return original || (media && (url.origin === location.origin || url.protocol === "data:"));
+    });
+  }
   const caption = button => (button.getAttribute("aria-label") || button.getAttribute("title") || button.textContent || "").trim();
   function promptField() {
     const fields = [...document.querySelectorAll('textarea,[contenteditable="true"],[contenteditable="plaintext-only"]')]
@@ -140,9 +148,9 @@
     const claimed = new Set();
     for (const {job, card, findCard} of queued) {
       const result = await waitFor(() => {
-        const current = card.isConnected ? card : findCard();
+        const current = (card.isConnected && resultImages(card).length ? card : findCard()) || (card.isConnected ? card : null);
         if (!current || claimed.has(current)) return null;
-        const urls = [...new Set(candidates().filter(image => current.contains(image)).map(image => image.currentSrc))];
+        const urls = [...new Set(resultImages(current).map(image => image.currentSrc || image.src))];
         if (urls.length !== 1) return null;
         claimed.add(current);
         return urls[0];
