@@ -15,7 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "VeTay"
-VERSION = "0.2.9"
+VERSION = "0.2.10"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -23,6 +23,7 @@ if (ROOT / "ffmpeg.exe").is_file():
     os.environ["FFMPEG_BINARY"] = str(ROOT / "ffmpeg.exe")
 LOCK = threading.Lock()
 LAST_ANALYSIS = {}
+FLOW_LOGIN_PROCESS = None
 VIDEO_SIZES = {
     "9:16": (1080, 1920),
     "16:9": (1920, 1080),
@@ -148,6 +149,9 @@ def normalize_flow_url(value):
     return urlunsplit(("https", parsed.hostname, parsed.path, parsed.query, parsed.fragment))
 
 def open_flow_sign_in(url):
+    global FLOW_LOGIN_PROCESS
+    if LOCK.locked():
+        return "Đợi tác vụ đang chạy kết thúc trước khi mở cửa sổ đăng nhập."
     try:
         url = normalize_flow_url(url or "https://flow.google.com/")
         candidates = [Path(os.environ[key]) / "Microsoft/Edge/Application/msedge.exe"
@@ -155,7 +159,8 @@ def open_flow_sign_in(url):
         edge = next((path for path in candidates if path.is_file()), None)
         if edge is None:
             raise RuntimeError("Không tìm thấy Microsoft Edge.")
-        subprocess.Popen([str(edge), f"--user-data-dir={DATA / 'flow-profile'}", url])
+        FLOW_LOGIN_PROCESS = subprocess.Popen([
+            str(edge), f"--user-data-dir={DATA / 'flow-profile'}", "--disable-background-mode", url])
         return ("Đăng nhập Google trong Edge vừa mở. Sau khi vào được Flow, "
                 "đóng toàn bộ cửa sổ Edge của hồ sơ này rồi bấm Tự tạo video.")
     except Exception as error:
@@ -166,8 +171,24 @@ def flow_images(url, model, prompts, folder, report):
     url = normalize_flow_url(url)
     report("Đang mở Edge để kết nối Google Flow…")
     with sync_playwright() as play:
-        browser = play.chromium.launch_persistent_context(str(DATA / "flow-profile"), channel="msedge",
-                                                          headless=False, accept_downloads=True, chromium_sandbox=True)
+        busy = ("Cửa sổ Edge đăng nhập Flow của Vẽ Tay vẫn đang mở. "
+                "Trong chính cửa sổ Edge đó, nhấn Alt+F4 rồi bấm lại Tự tạo video. "
+                "Nếu vẫn báo bận, thoát hẳn Edge qua menu ⋯ → Đóng Microsoft Edge.")
+        if FLOW_LOGIN_PROCESS is not None:
+            try:
+                FLOW_LOGIN_PROCESS.wait(timeout=5)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError(busy) from error
+        try:
+            browser = play.chromium.launch_persistent_context(
+                str(DATA / "flow-profile"), channel="msedge", headless=False,
+                accept_downloads=True, chromium_sandbox=True, args=["--disable-background-mode"])
+        except Exception as error:
+            detail = str(error)
+            if any(marker in detail.lower() for marker in ("opening in existing browser session",
+                       "profile is already in use", "processsingleton", "user data directory is already in use")):
+                raise RuntimeError(busy) from error
+            raise RuntimeError("Không mở được cửa sổ Flow: " + detail.splitlines()[0]) from error
         try:
             page = browser.pages[0] if browser.pages else browser.new_page()
             page.goto(url, wait_until="domcontentloaded")
