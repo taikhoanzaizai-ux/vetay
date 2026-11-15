@@ -27,6 +27,13 @@ $ffmpegDir = Get-ChildItem -LiteralPath $expanded -Directory | Select-Object -Fi
 Copy-Item -LiteralPath (Join-Path $ffmpegDir.FullName 'bin\ffmpeg.exe') -Destination $bundle
 Copy-Item -LiteralPath (Join-Path $ffmpegDir.FullName 'LICENSE') -Destination (Join-Path $bundle 'FFmpeg-LICENSE.txt')
 Copy-Item -LiteralPath app.py,README.md,version.txt -Destination $bundle
+@'
+Set shell = CreateObject("WScript.Shell")
+Set files = CreateObject("Scripting.FileSystemObject")
+base = files.GetParentFolderName(WScript.ScriptFullName)
+shell.CurrentDirectory = base
+shell.Run Chr(34) & base & "\runtime\pythonw.exe" & Chr(34) & " " & Chr(34) & base & "\app.py" & Chr(34), 0, False
+'@ | Set-Content -Encoding ascii (Join-Path $bundle 'Mo_Ve_Tay.vbs')
 $iconPath = Join-Path $bundle 'VeTay.ico'
 python -m pip install 'Pillow>=11,<13'
 python -c "from PIL import Image,ImageDraw; im=Image.new('RGBA',(256,256)); d=ImageDraw.Draw(im); d.rounded_rectangle((12,12,244,244),44,fill='#08795d'); d.line(((50,178),(90,135),(128,155),(200,62)),fill='white',width=18); im.save(r'$iconPath')"
