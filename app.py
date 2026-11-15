@@ -21,6 +21,7 @@ RELEASE_API = "https://api.github.com/repos/taikhoanzaizai-ux/vetay/releases/lat
 if (ROOT / "ffmpeg.exe").is_file():
     os.environ["FFMPEG_BINARY"] = str(ROOT / "ffmpeg.exe")
 LOCK = threading.Lock()
+LAST_ANALYSIS = {}
 VIDEO_SIZES = {
     "9:16": (1080, 1920),
     "16:9": (1920, 1080),
@@ -135,21 +136,41 @@ def flow_images(url, model, prompts, folder, report):
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.hostname not in {"labs.google", "flow.google"}:
         raise ValueError("Dán URL dự án Flow chính thức của Google.")
+    report("Đang mở Edge để kết nối Google Flow…")
     with sync_playwright() as play:
         browser = play.chromium.launch_persistent_context(str(DATA / "flow-profile"), channel="msedge",
                                                           headless=False, accept_downloads=True)
         try:
             page = browser.pages[0] if browser.pages else browser.new_page()
             page.goto(url, wait_until="domcontentloaded")
-            page.get_by_text(re.compile(r"^" + re.escape(model) + r"$", re.I)).first.wait_for(timeout=180000)
+            field = page.locator('textarea:visible, [contenteditable="true"]:visible')
+            report("Đang đợi mở dự án Flow. Nếu được hỏi, hãy đăng nhập Google trong Edge.")
+            field.last.wait_for(timeout=180000)
+            exact_model = re.compile(r"^" + re.escape(model) + r"$", re.I)
+            report(f"Đang kiểm tra model {model} trong Google Flow…")
+            if not page.get_by_text(exact_model).first.is_visible():
+                picker = page.get_by_role("button", name=re.compile(r"Nano Banana|Imagen|Veo|Model|Mô hình", re.I)).filter(visible=True)
+                if picker.count() == 1:
+                    picker.click(timeout=5000)
+                    image_tab = page.get_by_text(re.compile(r"^(Image|Hình ảnh|Ảnh)$", re.I), exact=True).filter(visible=True)
+                    if image_tab.count() == 1:
+                        image_tab.click(timeout=5000)
+                    choice = page.get_by_text(exact_model).filter(visible=True)
+                    if choice.count() == 1:
+                        choice.click(timeout=5000)
+            try:
+                page.get_by_text(exact_model).first.wait_for(timeout=25000)
+            except Exception as error:
+                raise RuntimeError(f"Không thấy {model} trong dự án Flow. Chọn chế độ Ảnh và kiểm tra model có trên tài khoản.") from error
             for i, prompt in enumerate(prompts):
                 report(f"Flow: đang tạo ảnh {i+1}/{len(prompts)}…")
-                field = page.locator('textarea:visible, [contenteditable="true"]:visible').last
-                field.fill(prompt, timeout=15000)
+                field.last.fill(prompt, timeout=15000)
                 generate = page.get_by_role("button", name=re.compile(r"^(Generate Image|Generate|Tạo hình ảnh|Tạo ảnh)$", re.I))
                 download = page.get_by_role("button", name=re.compile(r"^(Download|Tải xuống)( image| ảnh)?$", re.I))
                 existing = download.element_handles()
-                generate.last.click(timeout=15000)
+                if generate.count() != 1:
+                    raise RuntimeError("Không nhận ra nút tạo ảnh duy nhất trong Flow. Hãy mở dự án ở chế độ Ảnh.")
+                generate.click(timeout=15000)
                 previous = len(existing)
                 page.wait_for_function(
                     """n => [...document.querySelectorAll('button')].filter(b =>
@@ -259,16 +280,32 @@ def ui(check=False):
         try:
             with tempfile.TemporaryDirectory(prefix="input-", dir=DATA) as folder:
                 folder = Path(folder)
-                report("Đang chuẩn bị lời đọc…")
-                wav = prepare_audio(script, voice, folder)
-                report("Đang nhận dạng lời đọc và chia cảnh…")
-                plan = scenes(transcribe(wav), duration(wav))
+                fingerprint = hashlib.sha256()
+                if voice:
+                    with Path(voice).open("rb") as source:
+                        while chunk := source.read(1024 * 1024):
+                            fingerprint.update(chunk)
+                else:
+                    fingerprint.update((script or "").encode("utf-8"))
+                key = ("voice" if voice else "script", fingerprint.hexdigest())
+                cache = DATA / "last-analysis.wav"
+                if LAST_ANALYSIS.get("key") == key and cache.is_file():
+                    wav, plan = cache, LAST_ANALYSIS["plan"]
+                else:
+                    yield [], None, "Đang chuẩn bị lời đọc…"
+                    wav = prepare_audio(script, voice, folder)
+                    yield [], None, "Đang nhận dạng lời đọc và chia cảnh…"
+                    plan = scenes(transcribe(wav), duration(wav))
+                    os.replace(wav, cache)
+                    wav = cache
+                    LAST_ANALYSIS.update(key=key, plan=plan)
                 rows = scene_rows(plan, ratio)
-                yield rows, None, f"Đã phân tích {len(rows)} cảnh và viết prompt."
+                yield rows, None, f"Sẵn sàng: {len(rows)} cảnh và prompt."
                 if not render:
                     return
                 if provider == "flow":
-                    pictures = list(flow_images(url.strip(), model, [row[-1] for row in rows], folder, report))
+                    pictures = list(flow_images((url or "").strip(), model, [row[-1] for row in rows], folder, report))
+                    yield rows, None, f"Google Flow đã tạo ảnh {len(pictures)}/{len(rows)}."
                 if not pictures:
                     raise ValueError("Chọn ảnh theo thứ tự cảnh hoặc chọn Google Flow.")
                 dest = DATA / f"VeTay-{uuid.uuid4().hex[:8]}.mp4"
@@ -301,7 +338,7 @@ def ui(check=False):
             with gr.Column():
                 provider = gr.Radio([("Google Flow (thử nghiệm)", "flow"), ("Ảnh có sẵn", "files")],
                                     value="flow", label="Nguồn ảnh minh họa")
-                url = gr.Textbox(label="Đường dẫn dự án Google Flow", placeholder="https://labs.google/…")
+                url = gr.Textbox(label="Đường dẫn dự án Google Flow", placeholder="Dán link của một dự án Flow đã mở", info="Vẽ Tay tự gửi prompt theo từng cảnh. Lần đầu, đăng nhập trong cửa sổ Edge do ứng dụng mở.")
                 model = gr.Radio(["Nano Banana 2.1", "Nano Banana 2 Lite"], value="Nano Banana 2.1",
                                  label="Model ảnh trong Google Flow")
                 pictures = gr.File(label="Ảnh có sẵn theo thứ tự cảnh", file_count="multiple",
