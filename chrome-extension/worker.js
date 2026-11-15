@@ -21,6 +21,7 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
     }
     const saved = await chrome.storage.session.get(key);
     const pairing = saved[key];
+    if (m.op === "resume") return pairing ? api(pairing,"/next") : {done:true};
     if (!pairing) throw Error("Tab chưa được Vẽ Tay kết nối.");
     if (m.op === "next") return api(pairing,"/next");
     if (m.op === "error") return api(pairing,"/error",JSON.stringify({message:m.message}));
