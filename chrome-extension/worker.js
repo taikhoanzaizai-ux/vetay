@@ -23,6 +23,11 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
     const pairing = saved[key];
     if (m.op === "resume") return pairing ? api(pairing,"/next") : {done:true};
     if (!pairing) throw Error("Tab chưa được Vẽ Tay kết nối.");
+    if (m.op === "activate") {
+      await chrome.tabs.update(sender.tab.id, {active:true});
+      await chrome.windows.update(sender.tab.windowId, {focused:true});
+      return {active:true};
+    }
     if (m.op === "next") return api(pairing,"/next");
     if (m.op === "error") return api(pairing,"/error",JSON.stringify({message:m.message}));
     if (m.op === "image" && /^[a-f0-9]{32}$/.test(m.job) && Number.isInteger(m.index)) {
