@@ -50,7 +50,7 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
     }
     if (m.op === "next") return api(pairing,"/next");
     if (m.op === "batch") return api(pairing,"/batch");
-    if (m.op === "progress") return api(pairing,"/progress",JSON.stringify({count:m.count}));
+    if (m.op === "progress") return api(pairing,"/progress",JSON.stringify({count:m.count,stage:m.stage}));
     if (m.op === "error") return api(pairing,"/error",JSON.stringify({message:m.message}));
     if (m.op === "image" && /^[a-f0-9]{32}$/.test(m.job) && Number.isInteger(m.index)) {
       let image;
