@@ -1,4 +1,7 @@
 (() => {
+  const pairing = /^#vetay=([a-f0-9]{32})$/.exec(location.hash)?.[1];
+  if (pairing) history.replaceState(history.state, "", location.pathname + location.search);
+  if (!pairing && document.readyState === "loading") return;
   if (window.__veTayRunning) return;
   window.__veTayRunning = true;
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve,ms));
@@ -57,7 +60,13 @@
       await send({op:"image",job:job.job,index:job.index,url:result,data});
     }
   }
-  run().catch(async error => {
+  async function connect() {
+    if (pairing) await send({op:"pair",token:pairing});
+    if (document.readyState === "loading") await new Promise(resolve=>document.addEventListener("DOMContentLoaded",resolve,{once:true}));
+    for(let i=0;i<45&&!document.querySelector('textarea,[contenteditable="true"]');i++) await sleep(1000);
+    await run();
+  }
+  connect().catch(async error => {
     try {await send({op:"error",message:error.message});} catch {}
   }).finally(()=>{window.__veTayRunning=false;});
 })();
