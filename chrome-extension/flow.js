@@ -90,7 +90,8 @@
       }
       await sleep(500);
       const buttons = [...document.querySelectorAll("button,[role=button]")].filter(b=>visible(b)&&!b.disabled&&b.getAttribute("aria-disabled")!=="true");
-      let generate = buttons.filter(b=>/^(Generate Image|Create Image|Tạo hình ảnh|Tạo ảnh)$/i.test(caption(b)));
+      const start = buttons.filter(button => /^(Bắt đầu tạo|Start generating|Start creating)$/iu.test(caption(button)));
+      let generate = start.length === 1 ? start : buttons.filter(b=>/^(Generate Image|Create Image|Tạo hình ảnh|Tạo ảnh)$/i.test(caption(b)));
       if (generate.length === 0 && matching(/Nano Banana|Imagen/i).length === 1)
         generate = buttons.filter(b=>/^(Generate|Tạo)$/i.test(caption(b)));
       if (generate.length === 0) {
@@ -102,6 +103,10 @@
       if (generate.length !== 1) throw Error("Không nhận diện được nút tạo ảnh. Kiểm tra chế độ Ảnh, model và hạn mức Flow.");
       const before = new Set(candidates().map(i=>i.currentSrc));
       generate[0].click();
+      const submitted = await waitFor(() => !field.isConnected
+        || !(field.value ?? field.innerText ?? field.textContent ?? "").trim()
+        || candidates().some(image => !before.has(image.currentSrc)), 12);
+      if (!submitted) throw Error("Flow vẫn giữ prompt sau khi bấm Bắt đầu tạo. Kiểm tra thông báo trong dự án Flow.");
       let result, stableSince = 0;
       for (let elapsed=0;elapsed<175;elapsed++) {
         await sleep(1000);
