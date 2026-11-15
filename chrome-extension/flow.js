@@ -37,7 +37,9 @@
     const trigger = controls().filter(node => /aspect ratio|tỷ lệ|tỉ lệ|crop_(?:landscape|portrait)/iu.test(labels(node))
       || (node.getAttribute("aria-haspopup") && hasRatio.test(labels(node))));
     const options = () => controls().filter(node => !trigger.includes(node) && exact.test(labels(node)));
-    if (options().some(selected)) return;
+    const modelSettings = controls().filter(node => /Nano Banana|Imagen/iu.test(labels(node)) && /[x×][1-4]\b/iu.test(labels(node)));
+    if (!options().length && modelSettings.length === 1) modelSettings[0].click();
+    if (!options().length) await waitFor(() => options().length, 3);
     if (!options().length && trigger.length === 1) trigger[0].click();
     const option = await waitFor(() => {
       if (trigger.length === 1 && exact.test(labels(trigger[0])) && !options().length) return trigger[0];
@@ -46,6 +48,8 @@
     }, 5);
     if (!option) throw Error("Không tìm thấy tỷ lệ " + ratio + " trong Google Flow.");
     if (!trigger.includes(option) && !selected(option)) option.click();
+    const single = controls().filter(node => /^[x×]\s*1$/iu.test(caption(node)));
+    if (single.length === 1 && !selected(single[0])) single[0].click();
   }
   async function run() {
     let appliedRatio;
@@ -76,6 +80,12 @@
       let generate = buttons.filter(b=>/^(Generate Image|Create Image|Tạo hình ảnh|Tạo ảnh)$/i.test(caption(b)));
       if (generate.length === 0 && matching(/Nano Banana|Imagen/i).length === 1)
         generate = buttons.filter(b=>/^(Generate|Tạo)$/i.test(caption(b)));
+      if (generate.length === 0) {
+        const editor = field.closest("form") || field.parentElement;
+        generate = buttons.filter(button => /^(arrow_forward|send|gửi)$/iu.test(caption(button))
+          && (editor?.contains(button) || field.getBoundingClientRect().bottom <= button.getBoundingClientRect().bottom
+            && Math.abs(field.getBoundingClientRect().right - button.getBoundingClientRect().right) < 100));
+      }
       if (generate.length !== 1) throw Error("Không nhận diện được nút tạo ảnh. Kiểm tra chế độ Ảnh, model và hạn mức Flow.");
       const before = new Set(candidates().map(i=>i.currentSrc));
       generate[0].click();
