@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.43"
+VERSION = "0.2.44"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -227,8 +227,11 @@ def highlight_overlay(text, width, height, target):
     return True
 
 
-def scene_rows(plan, ratio="9:16", highlights=False, shared_prompt=""):
-    return [[i, timecode(start), timecode(end), round((end-start)/24, 3), text, prompt_for(text, ratio, shared_prompt), highlight_text(text) if highlights else ""]
+def scene_rows(plan, ratio="9:16", highlights=False, shared_prompt="", for_flow=True):
+    image_ratio = {"21:9": "16:9", "4:5": "3:4"}.get(ratio, ratio) if for_flow else ratio
+    if image_ratio != ratio:
+        shared_prompt = (shared_prompt or "").strip() + "\nGiữ chủ thể trong vùng giữa để đặt vào video tỷ lệ " + ratio + "."
+    return [[i, timecode(start), timecode(end), round((end-start)/24, 3), text, prompt_for(text, image_ratio, shared_prompt), highlight_text(text) if highlights else ""]
             for i, (start, end, text) in enumerate(plan, 1)]
 
 def prepare_audio(script, voice, folder):
@@ -688,9 +691,9 @@ try {
                             cache.unlink(missing_ok=True)
                         except OSError:
                             pass
-                rows = scene_rows(plan, ratio, highlights, shared_prompt)
-                yield rows, None, f"Sẵn sàng: {len(rows)} cảnh và prompt."
+                rows = scene_rows(plan, ratio, highlights, shared_prompt, provider != "files")
                 if not render:
+                    yield rows, None, f"Sẵn sàng: {len(rows)} cảnh và prompt."
                     return
                 if provider == "chrome":
                     if chrome_server is None:
@@ -730,6 +733,7 @@ try {
         yield from run(script, voice, None, None, ratio, highlights, False, shared_prompt=shared_prompt)
 
     def generate_video(script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt, full_resolution):
+        yield gr.skip(), gr.skip(), "Đã nhận lệnh tạo video. Đang chuẩn bị dữ liệu…"
         yield from run(script, voice, pictures, provider, ratio, highlights, True, output_folder, shared_prompt, full_resolution)
 
     css = "body, .gradio-container, button, textarea, input { font-family: 'Segoe UI', Arial, sans-serif !important; }"
