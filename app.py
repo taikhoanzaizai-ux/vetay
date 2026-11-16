@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.31"
+VERSION = "0.2.32"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -128,7 +128,7 @@ def scenes(words, seconds):
             result.append((first, last, text))
     return result
 
-def prompt_for(text, ratio="9:16"):
+def prompt_for(text, ratio="9:16", shared_prompt=""):
     rules = (
         (r"cà phê|ăn vặt|đồ uống", "ly cà phê và món ăn nhẹ đặt cạnh ví tiền"),
         (r"tiết kiệm|dành dụm", "hũ tiết kiệm, bàn tay bỏ đồng xu vào hũ"),
@@ -139,10 +139,13 @@ def prompt_for(text, ratio="9:16"):
     visuals = next((art for key, art in rules if re.search(key, text, re.I)), "")
     direction = (f"Gợi ý hình ảnh trọng tâm: {visuals}. " if visuals else
                  "Chọn một chủ thể và một hành động cụ thể có trong lời đọc. ")
+    shared_prompt = (shared_prompt or "").strip()
+    style = ("Yêu cầu chung áp dụng cho mọi cảnh:\n" + shared_prompt + "\n"
+             if shared_prompt else
+             "Nền trắng trơn, đường viền đậm rõ, ít chi tiết, chủ thể tách nền, "
+             "màu xanh ngọc và vàng nhạt. Không chữ, số, logo hoặc watermark. ")
     return (f"Tạo một ảnh minh họa tỷ lệ {ratio} để chuyển thành video vẽ tay. "
-            "Nền trắng trơn, đường viền đậm rõ, ít chi tiết, chủ thể tách nền, "
-            "màu xanh ngọc và vàng nhạt. Không chữ, số, logo hoặc watermark. "
-            + direction + "Dùng lời đọc sau làm ngữ cảnh, không chép thành chữ trên ảnh: " + text)
+            + style + direction + "Dùng lời đọc sau làm ngữ cảnh, không chép nguyên văn lên ảnh: " + text)
 
 def timecode(frame):
     ms = round(frame * 1000 / 24)
@@ -203,8 +206,8 @@ def highlight_overlay(text, width, height, target):
     return True
 
 
-def scene_rows(plan, ratio="9:16", highlights=False):
-    return [[i, timecode(start), timecode(end), round((end-start)/24, 3), text, prompt_for(text, ratio), highlight_text(text) if highlights else ""]
+def scene_rows(plan, ratio="9:16", highlights=False, shared_prompt=""):
+    return [[i, timecode(start), timecode(end), round((end-start)/24, 3), text, prompt_for(text, ratio, shared_prompt), highlight_text(text) if highlights else ""]
             for i, (start, end, text) in enumerate(plan, 1)]
 
 def prepare_audio(script, voice, folder):
@@ -594,7 +597,7 @@ try {
             raise gr.Error("Thư mục lưu video chưa tồn tại.")
         os.startfile(str(folder))
 
-    def run(script, voice, pictures, provider, ratio, highlights, render, output_folder=None, progress=gr.Progress()):
+    def run(script, voice, pictures, provider, ratio, highlights, render, output_folder=None, shared_prompt="", progress=gr.Progress()):
         def report(message):
             progress(None, desc=message)
         if not LOCK.acquire(blocking=False):
@@ -629,7 +632,7 @@ try {
                     os.replace(wav, cache)
                     wav = cache
                     LAST_ANALYSIS.update(key=key, plan=plan)
-                rows = scene_rows(plan, ratio, highlights)
+                rows = scene_rows(plan, ratio, highlights, shared_prompt)
                 yield rows, None, f"Sẵn sàng: {len(rows)} cảnh và prompt."
                 if not render:
                     return
@@ -662,18 +665,21 @@ try {
         finally:
             LOCK.release()
 
-    def analyze(script, voice, ratio, highlights):
-        yield from run(script, voice, None, None, ratio, highlights, False)
+    def analyze(script, voice, ratio, highlights, shared_prompt):
+        yield from run(script, voice, None, None, ratio, highlights, False, shared_prompt=shared_prompt)
 
-    def generate_video(script, voice, pictures, provider, ratio, highlights, output_folder):
-        yield from run(script, voice, pictures, provider, ratio, highlights, True, output_folder)
+    def generate_video(script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt):
+        yield from run(script, voice, pictures, provider, ratio, highlights, True, output_folder, shared_prompt)
 
     css = "body, .gradio-container, button, textarea, input { font-family: 'Segoe UI', Arial, sans-serif !important; }"
     with gr.Blocks(title="Vẽ Tay") as app:
         gr.HTML('<div lang="vi"><h1>Vẽ Tay</h1></div>')
         with gr.Row():
+            script = gr.Textbox(label="Kịch bản tiếng Việt", lines=4)
+            shared_prompt = gr.Textbox(label="Prompt chung cho toàn video", lines=4,
+                                      placeholder="Ví dụ: Nền kem, nét vẽ bút chì, giữ cùng nhân vật và bảng màu qua mọi cảnh.")
+        with gr.Row():
             with gr.Column():
-                script = gr.Textbox(label="Kịch bản tiếng Việt", lines=5)
                 voice = gr.Audio(label="Bản thu lời đọc (MP3 / WAV)", sources=["upload"], type="filepath")
 
                 ratio = gr.Dropdown([(f"{key} · {w} × {h}", key) for key, (w,h) in VIDEO_SIZES.items()],
@@ -684,6 +690,7 @@ try {
 
                 pictures = gr.File(label="Ảnh có sẵn theo thứ tự cảnh", file_count="multiple",
                                    file_types=["image"], type="filepath")
+        video = gr.Video(label="Xem trước video MP4", height=260, elem_id="vetay-preview")
         highlights = gr.Checkbox(value=True, label="Chữ nhấn theo cảnh")
         with gr.Row():
             analysis = gr.Button("Phân tích và chia cảnh")
@@ -693,7 +700,6 @@ try {
                              datatype=["number", "str", "str", "number", "str", "str", "str"],
                              label="Bảng phân cảnh theo lời đọc", wrap=True, interactive=False)
         task = gr.Textbox(label="Tiến độ dựng", interactive=False)
-        video = gr.Video(label="Video MP4")
         with gr.Row():
             output_folder = gr.Textbox(value=str(DATA), label="Thư mục lưu MP4")
             choose_folder = gr.Button("Chọn thư mục")
@@ -703,8 +709,18 @@ try {
         status = gr.Textbox(label="Trạng thái cập nhật", interactive=False)
         gr.Button("Chuẩn bị tiện ích Chrome").click(prepare_chrome_bundle, outputs=status)
         gr.Button("Cập nhật qua GitHub").click(update, outputs=status)
-        analysis.click(analyze, [script, voice, ratio, highlights], [table, video, task])
-        generate.click(generate_video, [script, voice, pictures, provider, ratio, highlights, output_folder], [table, video, task])
+        analysis.click(analyze, [script, voice, ratio, highlights, shared_prompt], [table, video, task])
+        generation = generate.click(
+            generate_video, [script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt],
+            [table, video, task],
+        )
+        generation.success(
+            fn=None, inputs=[video], outputs=None, queue=False, show_progress="hidden",
+            js="""(video) => {
+                if (video) document.getElementById('vetay-preview')?.scrollIntoView({behavior: 'smooth', block: 'start'});
+                return [];
+            }""",
+        )
     if check:
         engine()
         print(f"VeTay {VERSION}: {len(app.config['components'])} controls.")
