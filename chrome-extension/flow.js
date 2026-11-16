@@ -1,5 +1,5 @@
 (() => {
-  const pairing = /^#vetay=([a-f0-9]{32})$/.exec(location.hash)?.[1];
+  const pairing = /^#vetay=([a-f0-9]{32})(?:-([0-9]{4,5}))?$/.exec(location.hash);
   if (window.__veTayRunning) return;
   window.__veTayRunning = true;
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve,ms));
@@ -193,7 +193,7 @@
     .filter(item=>visible(item)&&!item.disabled&&item.getAttribute("aria-disabled")!=="true"
       && (pattern.test(caption(item)) || pattern.test((item.innerText || item.textContent || "").replace(/\s+/gu, " ").trim())));
   async function connect() {
-    const state = await send(pairing ? {op:"pair",token:pairing} : {op:"resume"});
+    const state = await send(pairing ? {op:"pair",token:pairing[1],port:Number(pairing[2] || 7877)} : {op:"resume"});
     if (state.done) return;
     if (pairing) history.replaceState(history.state, "", location.pathname + location.search); 
     if (document.readyState === "loading") await new Promise(resolve=>document.addEventListener("DOMContentLoaded",resolve,{once:true}));
