@@ -100,8 +100,6 @@
         field = await waitFor(promptField, 10);
         if (!field) throw Error("Không thấy ô prompt sau khi chọn tỷ lệ.");
       }
-      if (!await waitFor(() => document.hasFocus() && !document.hidden, 6))
-        throw Error("Chrome chưa đưa tab Flow lên trước để gửi prompt.");
       field.focus();
       if (field instanceof HTMLTextAreaElement) {
         Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(field,job.prompt);
