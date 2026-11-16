@@ -177,6 +177,7 @@
     for (const {job, result:card} of results) {
       if (!card.isConnected) throw Error("Thẻ ảnh cảnh " + (job.index + 1) + " đã thay đổi.");
       const activateControl = async (node, clicks=1) => {
+        await send({op:"activate"});
         node.scrollIntoView({block:"center", inline:"nearest"});
         const box = node.getBoundingClientRect();
         const x = box.left + box.width / 2, y = box.top + box.height / 2;
