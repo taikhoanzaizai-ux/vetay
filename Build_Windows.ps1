@@ -29,6 +29,22 @@ Copy-Item -LiteralPath (Join-Path $ffmpegDir.FullName 'LICENSE') -Destination (J
 python -c "from pathlib import Path; s=Path('app.py').read_text(encoding='utf-8-sig'); assert 'K\u1ecbch b\u1ea3n ti\u1ebfng Vi\u1ec7t' in s and 'Ph\u00e2n t\u00edch v\u00e0 chia c\u1ea3nh' in s and chr(65533) not in s, 'Invalid Vietnamese UI encoding'"
 Copy-Item -LiteralPath app.py,README.md,version.txt -Destination $bundle
 @'
+import base64
+import hashlib
+from pathlib import Path
+import app
+
+assert app.VERSION == Path("version.txt").read_text().strip()
+folder = Path("bundle") / "Data" / "chrome-extension"
+folder.mkdir(parents=True, exist_ok=True)
+for name, expected in app.BUNDLED_EXTENSION["files"].items():
+    data = base64.b64decode(app.BUNDLED_EXTENSION_FILES[name], validate=True)
+    assert hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest() == expected
+    (folder / name).write_bytes(data)
+'@ | python -
+Get-ChildItem -LiteralPath (Join-Path $deps 'torch\lib') -File -Filter '*.lib' |
+    Remove-Item
+@'
 Set shell = CreateObject("WScript.Shell")
 Set files = CreateObject("Scripting.FileSystemObject")
 base = files.GetParentFolderName(WScript.ScriptFullName)
