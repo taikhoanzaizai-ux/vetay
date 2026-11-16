@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.33"
+VERSION = "0.2.34"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -601,6 +601,8 @@ try {
         os.startfile(str(folder))
 
     def run(script, voice, pictures, provider, ratio, highlights, render, output_folder=None, shared_prompt="", progress=gr.Progress()):
+        nonlocal chrome_server
+
         def report(message):
             progress(None, desc=message)
         if not LOCK.acquire(blocking=False):
@@ -647,7 +649,13 @@ try {
                     return
                 if provider == "chrome":
                     if chrome_server is None:
-                        raise RuntimeError("Cổng kết nối Chrome 7877 đang bận. Đóng các bản Vẽ Tay khác rồi mở lại.")
+                        try:
+                            chrome_server = bridge.serve()
+                        except OSError as error:
+                            raise RuntimeError(
+                                "Cổng Chrome 7877 đang bận. Đóng phiên Vẽ Tay khác, "
+                                "sau đó bấm Tự tạo video lại trong cửa sổ này."
+                            ) from error
                     yield rows, None, "Đang mở Google Flow và kết nối tự động với tiện ích Chrome…"
                     pictures = bridge.images([row[5] for row in rows], folder, report)
 
@@ -737,9 +745,9 @@ try {
     import webview
     try:
         chrome_server = bridge.serve()
-        threading.Thread(target=refresh_existing_extension, daemon=True).start()
     except OSError:
         pass
+    threading.Thread(target=refresh_existing_extension, daemon=True).start()
     _, local_url, _ = app.queue(default_concurrency_limit=1).launch(
         server_name="127.0.0.1", prevent_thread_lock=True, inbrowser=False,
         share=False, allowed_paths=[str(DATA)], quiet=True, css=css)
