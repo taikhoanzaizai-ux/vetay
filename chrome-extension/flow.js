@@ -84,8 +84,9 @@
     const normalize = text => (text || "").replace(/\s+/gu, " ").trim();
     const initialCards = cards();
     let newestFirst = true;
-    for (const [offset, prompt] of batch.prompts.entries()) {
-      const job = {job:batch.job, index:batch.index + offset, prompt};
+    let lastSubmit = 0;
+    async function submitScene(job) {
+      const {prompt} = job;
       const agent = [...document.querySelectorAll('[role="checkbox"],input[type="checkbox"]')].find(node => visible(node)
         && /^(Tác nhân|Agent)$/iu.test((node.getAttribute("aria-label") || node.textContent || "").trim())
         && (node.checked || node.getAttribute("aria-checked") === "true"));
@@ -141,6 +142,8 @@
       const x = box.left + box.width / 2;
       const y = box.top + box.height / 2;
       if (!submit.contains(document.elementFromPoint(x,y))) throw Error("Nút tạo ảnh đang bị che.");
+      await sleep(Math.max(0, 8000 - (Date.now() - lastSubmit)));
+      lastSubmit = Date.now();
       await send({op:"submit", job:job.job, x, y});
       const findCard = () => {
         const matches = cards().filter(card => !prior.has(card) &&
@@ -150,27 +153,49 @@
       };
       const card = await waitFor(findCard, 20);
       if (!card) throw Error("Flow chưa xác nhận đã nhận prompt cảnh " + (job.index + 1) + ".");
+      return {job, card, findCard};
+    }
+    for (const [offset, prompt] of batch.prompts.entries()) {
+      const job = {job:batch.job, index:batch.index + offset, prompt};
+      const entry = await submitScene(job);
+      const card = entry.card;
       const currentCards = cards();
       newestFirst &&= currentCards.length === initialCards.length + queued.length + 1
         && currentCards[0] === card;
-      queued.push({job, card, findCard});
+      queued.push(entry);
       await send({op:"progress", count:queued.length, stage:"submitted"});
     }
     const claimed = new Set();
-    for (const {job, card, findCard} of queued) {
-      const result = await waitFor(() => {
+    for (const original of queued) {
+      const {job} = original;
+      let entry = original;
+      let result;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const {card, findCard} = entry;
+        const status = await waitFor(() => {
         const grid = cards();
-        const replacement = newestFirst && initialCards.length === 0 && grid.length === queued.length
+        const replacement = attempt === 0 && newestFirst && initialCards.length === 0 && grid.length === queued.length
           && grid.every(item => resultImages(item).length === 1)
           ? grid[queued.length - 1 - queued.findIndex(entry => entry.card === card)] : null;
-        const current = (card.isConnected && resultImages(card).length ? card : findCard()) || replacement;
+        const current = (card.isConnected && resultImages(card).length ? card : findCard()) || replacement || (card.isConnected ? card : null);
         if (!current || claimed.has(current)) return null;
+        const message = normalize(current.innerText);
+        if (/hạn mức|không đủ tín dụng|chính sách|unusual activity|policy violation|not enough credits|quota/i.test(message) && !resultImages(current).length)
+          throw Error("Flow yêu cầu kiểm tra chính sách hoặc hạn mức ở cảnh " + (job.index + 1) + ".");
+        if (/tạo quá nhanh|requesting generations too quickly|rate limit|generation failed|không thể tạo|tạo ảnh thất bại/i.test(message) && !resultImages(current).length)
+          return {failed:true};
         const urls = [...new Set(resultImages(current).map(image => image.currentSrc || image.src))];
         if (urls.length !== 1) return null;
         claimed.add(current);
-        return current;
-      }, 175);
-      if (!result) throw Error("Không tìm thấy ảnh kết quả của cảnh " + (job.index + 1) + ".");
+        return {card:current};
+        }, 150);
+        if (status?.card) { result = status.card; break; }
+        if (!status?.failed || attempt === 2) break;
+        await send({op:"progress", count:results.length + 1, stage:"retry"});
+        await sleep(attempt === 0 ? 30000 : 60000);
+        entry = await submitScene(job);
+      }
+      if (!result) throw Error("Không nhận được ảnh cảnh " + (job.index + 1) + ". Kiểm tra trạng thái cảnh trong Flow.");
       results.push({job, result});
       await send({op:"progress", count:results.length});
     }
