@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.39"
+VERSION = "0.2.40"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -243,12 +243,12 @@ def prepare_audio(script, voice, folder):
     ffmpeg("-i", voice, "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", wav)
     return wav
 
-def render_folder(voice, pictures, plan, destination, report, ratio="9:16", highlights=False):
+def render_folder(voice, pictures, plan, destination, report, ratio="9:16", highlights=False, full_resolution=True):
     from PIL import Image, ImageOps
     import numpy as np
     path, render_video, Settings = engine()
     width, height = VIDEO_SIZES[ratio]
-    preview_width, preview_height = ((size * 2 // 5) // 2 * 2 for size in (width, height))
+    preview_width, preview_height = (width, height) if full_resolution else tuple(size // 5 * 2 for size in (width, height))
     if len(pictures) < len(plan):
         raise ValueError(f"Cần {len(plan)} ảnh, hiện có {len(pictures)}.")
     with tempfile.TemporaryDirectory(prefix="vetay-", dir=destination.parent) as work:
@@ -257,7 +257,7 @@ def render_folder(voice, pictures, plan, destination, report, ratio="9:16", high
         for i, ((start, end, text), picture) in enumerate(zip(plan, pictures)):
             report(f"Whiteboard Animation VI: cảnh {i+1}/{len(plan)}…")
             with Image.open(picture) as raw:
-                art = ImageOps.contain(ImageOps.exif_transpose(raw).convert("RGB"), (preview_width, preview_height))
+                art = ImageOps.contain(ImageOps.exif_transpose(raw).convert("RGB"), (preview_width, preview_height), method=Image.Resampling.LANCZOS)
             canvas = Image.new("RGB", (preview_width, preview_height), "white")
             canvas.paste(art, ((preview_width-art.width)//2, (preview_height-art.height)//2))
             settings = Settings(device="cpu", encoder="cpu", width=preview_width, height=preview_height, fps=24, fit="contain",
@@ -271,14 +271,14 @@ def render_folder(voice, pictures, plan, destination, report, ratio="9:16", high
                     delay = min(1.3, (end-start)/48)
                     ffmpeg("-i", clip, "-i", overlay, "-filter_complex",
                            f"[0:v][1:v]overlay=enable='gte(t,{delay:.3f})':eof_action=repeat",
-                           "-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", titled)
+                           "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", titled)
                     clip = titled
             clips.append(clip)
         listing = work / "clips.txt"
         listing.write_text("".join(f"file '{clip.name}'\n" for clip in clips), encoding="utf-8")
         output = work / "complete.mp4"
         ffmpeg("-f", "concat", "-safe", "0", "-i", listing, "-i", voice, "-map", "0:v", "-map", "1:a",
-               "-vf", f"scale={width}:{height}:flags=lanczos", "-c:v", "libx264", "-preset", "veryfast",
+               "-vf", f"scale={width}:{height}:flags=lanczos", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
                "-pix_fmt", "yuv420p", "-c:a", "aac", "-af", "apad", "-shortest", "-movflags", "+faststart", output)
         os.replace(output, destination)
     return str(destination)
@@ -627,7 +627,7 @@ try {
             raise gr.Error("Thư mục lưu video chưa tồn tại.")
         os.startfile(str(folder))
 
-    def run(script, voice, pictures, provider, ratio, highlights, render, output_folder=None, shared_prompt="", progress=gr.Progress()):
+    def run(script, voice, pictures, provider, ratio, highlights, render, output_folder=None, shared_prompt="", full_resolution=True, progress=gr.Progress()):
         nonlocal chrome_server
 
         def report(message):
@@ -688,7 +688,7 @@ try {
                 if not pictures:
                     raise ValueError("Chọn ảnh theo thứ tự cảnh hoặc chọn Google Flow.")
                 dest = DATA / f"VeTay-{uuid.uuid4().hex[:8]}.mp4"
-                path = render_folder(wav, pictures, plan, dest, report, ratio, highlights)
+                path = render_folder(wav, pictures, plan, dest, report, ratio, highlights, full_resolution)
                 saved = save_folder / dest.name
                 if saved != dest:
                     try:
@@ -711,8 +711,8 @@ try {
     def analyze(script, voice, ratio, highlights, shared_prompt):
         yield from run(script, voice, None, None, ratio, highlights, False, shared_prompt=shared_prompt)
 
-    def generate_video(script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt):
-        yield from run(script, voice, pictures, provider, ratio, highlights, True, output_folder, shared_prompt)
+    def generate_video(script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt, full_resolution):
+        yield from run(script, voice, pictures, provider, ratio, highlights, True, output_folder, shared_prompt, full_resolution)
 
     css = "body, .gradio-container, button, textarea, input { font-family: 'Segoe UI', Arial, sans-serif !important; }"
     with gr.Blocks(title="Vẽ Tay") as app:
@@ -734,6 +734,7 @@ try {
                 pictures = gr.File(label="Ảnh có sẵn theo thứ tự cảnh", file_count="multiple",
                                    file_types=["image"], type="filepath")
         video = gr.Video(label="Xem trước video MP4", height=260, elem_id="vetay-preview")
+        full_resolution = gr.Checkbox(value=True, label="Dựng ở độ phân giải đầy đủ")
         highlights = gr.Checkbox(value=True, label="Chữ nhấn theo cảnh")
         with gr.Row():
             analysis = gr.Button("Phân tích và chia cảnh")
@@ -754,7 +755,7 @@ try {
         gr.Button("Cập nhật qua GitHub").click(update, outputs=status)
         analysis.click(analyze, [script, voice, ratio, highlights, shared_prompt], [table, video, task])
         generation = generate.click(
-            generate_video, [script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt],
+            generate_video, [script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt, full_resolution],
             [table, video, task],
         )
         generation.success(
