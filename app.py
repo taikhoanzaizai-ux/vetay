@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import sys
+import urllib.error
 import urllib.request
 import asyncio
 import os
@@ -17,7 +18,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.49"
+VERSION = "0.2.50"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -613,6 +614,36 @@ class ChromeFlowBridge:
             with self.guard:
                 self.job = None
 
+def muse_images(prompts, folder, ratio, api_key, report):
+    from PIL import Image
+
+    width, height = VIDEO_SIZES[ratio]
+    pictures = []
+    for scene, prompt in enumerate(prompts, 1):
+        report(f"Muse Image: {scene}/{len(prompts)}")
+        request = urllib.request.Request(
+            "https://api.meta.ai/v1/images/generations",
+            data=json.dumps({"model": "muse-image-1.0", "prompt": prompt, "n": 1,
+                             "size": f"{width}x{height}", "output_format": "png",
+                             "response_format": "b64_json"}).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response:
+                payload = json.load(response)
+            picture = folder / f"muse-{scene:04}.png"
+            picture.write_bytes(base64.b64decode(payload["data"][0]["b64_json"], validate=True))
+            with Image.open(picture, formats=["PNG"]) as image:
+                image.verify()
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"Muse Image: cảnh {scene}, HTTP {error.code}.") from error
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
+            raise RuntimeError(f"Muse Image: không nhận được ảnh hợp lệ cho cảnh {scene}.") from error
+        pictures.append(picture)
+    return pictures
+
+
 def ui(check=False):
     prepare_data()
     import gradio as gr
@@ -650,7 +681,7 @@ try {
             raise gr.Error("Thư mục lưu video chưa tồn tại.")
         os.startfile(str(folder))
 
-    def run(script, voice, pictures, provider, ratio, highlights, render, output_folder=None, shared_prompt="", full_resolution=True, progress=gr.Progress()):
+    def run(script, voice, pictures, provider, ratio, highlights, render, output_folder=None, shared_prompt="", full_resolution=True, muse_key="", progress=gr.Progress()):
         nonlocal chrome_server
 
         def report(message):
@@ -662,6 +693,10 @@ try {
         try:
             save_folder = Path((output_folder or "").strip().strip('"') or DATA).expanduser()
             if render:
+                if provider == "muse":
+                    muse_key = (muse_key or os.environ.get("MODEL_API_KEY", "")).strip()
+                    if not muse_key:
+                        raise ValueError("Nhập khóa Meta Model API để dùng Muse Image.")
                 if not save_folder.is_absolute() or not save_folder.is_dir():
                     raise ValueError("Chọn một thư mục lưu video đã tồn tại.")
                 save_folder = save_folder.resolve()
@@ -709,6 +744,10 @@ try {
                     yield rows, None, "Đang mở Google Flow và kết nối tự động với tiện ích Chrome…"
                     pictures = bridge.images([row[5] for row in rows], folder, report)
 
+                elif provider == "muse":
+                    yield rows, None, "Đang tạo ảnh từng cảnh bằng Muse Image…"
+                    pictures = muse_images([row[5] for row in rows], folder, ratio, muse_key, report)
+
                 if not pictures:
                     raise ValueError("Chọn ảnh theo thứ tự cảnh hoặc chọn Google Flow.")
                 dest = DATA / f"VeTay-{uuid.uuid4().hex[:8]}.mp4"
@@ -735,9 +774,9 @@ try {
     def analyze(script, voice, ratio, highlights, shared_prompt):
         yield from run(script, voice, None, None, ratio, highlights, False, shared_prompt=shared_prompt)
 
-    def generate_video(script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt, full_resolution):
+    def generate_video(script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt, full_resolution, muse_key):
         for rows, result, message in run(
-            script, voice, pictures, provider, ratio, highlights, True, output_folder, shared_prompt, full_resolution
+            script, voice, pictures, provider, ratio, highlights, True, output_folder, shared_prompt, full_resolution, muse_key
         ):
             preview_path, saved_path = result if isinstance(result, tuple) else (None, "")
             yield rows, preview_path, message, saved_path
@@ -762,9 +801,12 @@ try {
                 ratio = gr.Dropdown([(f"{key} · {w} × {h}", key) for key, (w,h) in VIDEO_SIZES.items()],
                                     value="9:16", label="Tỷ lệ video")
             with gr.Column():
-                provider = gr.Radio([("Google Flow qua tiện ích Chrome", "chrome"), ("Ảnh có sẵn", "files")],
+                provider = gr.Radio([("Google Flow qua tiện ích Chrome", "chrome"), ("Muse Image (Meta API)", "muse"), ("Ảnh có sẵn", "files")],
                                     value="chrome", label="Nguồn ảnh minh họa")
 
+                muse_key = gr.Textbox(label="Khóa Meta Model API", type="password", visible=False)
+                provider.change(lambda source: gr.update(visible=source == "muse"),
+                                [provider], [muse_key], queue=False)
                 pictures = gr.File(label="Ảnh có sẵn theo thứ tự cảnh", file_count="multiple",
                                    file_types=["image"], type="filepath")
         video = gr.Video(label="Xem trước video MP4", height=260, elem_id="vetay-preview")
@@ -774,7 +816,7 @@ try {
             analysis = gr.Button("Phân tích và chia cảnh")
             generate = gr.Button("Tự tạo video", variant="primary")
         table = gr.Dataframe(headers=["Cảnh", "Bắt đầu", "Kết thúc", "Thời lượng (giây)",
-                                      "Lời đọc", "Prompt Google Flow", "Chữ nhấn"],
+                                      "Lời đọc", "Prompt tạo ảnh", "Chữ nhấn"],
                              datatype=["number", "str", "str", "number", "str", "str", "str"],
                              label="Bảng phân cảnh theo lời đọc", wrap=True, interactive=False)
         task = gr.Textbox(label="Tiến độ dựng", interactive=False)
@@ -798,7 +840,7 @@ try {
             outputs=task, queue=False, show_progress="hidden",
         )
         generation = start_generation.success(
-            generate_video, [script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt, full_resolution],
+            generate_video, [script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt, full_resolution, muse_key],
             [table, preview_path, task, saved_video],
             show_progress="minimal",
         )
