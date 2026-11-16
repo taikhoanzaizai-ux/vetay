@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vẽ Tay · Google Flow",
-  "version": "1.3.16",
+  "version": "1.3.17",
   "action": {
     "default_popup": "popup.html"
   },
