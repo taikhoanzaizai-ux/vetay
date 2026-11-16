@@ -45,8 +45,10 @@
       .some(icon => [icon.textContent, icon.getAttribute("aria-label"), icon.getAttribute("data-icon")]
         .some(label => label?.trim() === iconName));
     const hasRatio = ratioLabel("[0-9]+:[0-9]+");
-    const trigger = controls().filter(node => /aspect ratio|tỷ lệ|tỉ lệ|crop_(?:landscape|portrait)/iu.test(labels(node))
-      || (node.getAttribute("aria-haspopup") && hasRatio.test(labels(node))));
+    const isOption = node => ["radio", "option", "menuitemradio"].includes(node.getAttribute("role"));
+    const trigger = controls().filter(node => !isOption(node) && (node.getAttribute("aria-haspopup")
+      ? /aspect ratio|tỷ lệ|tỉ lệ/iu.test(labels(node)) || hasRatio.test(labels(node))
+      : /^(?:aspect ratio|tỷ lệ(?: khung hình)?|tỉ lệ(?: khung hình)?)$/iu.test(caption(node))));
     const options = () => controls().filter(node => !trigger.includes(node) && node !== settings && matchesRatio(node));
     const modelSettings = controls().filter(node => /Nano Banana|Imagen/iu.test(labels(node)) && /[x×][1-4]\b/iu.test(labels(node)));
     const settings = controls().find(node => /^(Điều kiện kích hoạt cài đặt|Settings trigger|Generation settings)$/iu.test(caption(node)))
@@ -63,10 +65,10 @@
     const option = await waitFor(() => {
       if (trigger.length === 1 && exact.test(labels(trigger[0])) && !options().length) return trigger[0];
       const matches = options();
-      const radios = matches.filter(node => ["radio", "option", "menuitemradio"].includes(node.getAttribute("role")));
+      const radios = matches.filter(isOption);
       return radios.length === 1 ? radios[0] : matches.length === 1 ? matches[0] : null;
     }, 12);
-    if (!option) throw Error("Không tìm thấy tỷ lệ " + ratio + " trong Google Flow.");
+    if (!option) throw Error("Không chọn được tỷ lệ " + ratio + " trong Flow (" + (settings ? "đã thấy nút cài đặt ảnh" : "chưa thấy nút cài đặt ảnh") + ").");
     if (!trigger.includes(option) && !selected(option)) option.click();
     const single = controls().filter(node => /^[x×]\s*1$/iu.test(caption(node)));
     if (single.length === 1 && !selected(single[0])) single[0].click();
