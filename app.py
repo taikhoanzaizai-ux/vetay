@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.37"
+VERSION = "0.2.38"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -133,22 +133,40 @@ def scenes(words, seconds):
 
 def prompt_for(text, ratio="9:16", shared_prompt=""):
     rules = (
-        (r"cà phê|ăn vặt|đồ uống", "ly cà phê và món ăn nhẹ đặt cạnh ví tiền"),
-        (r"tiết kiệm|dành dụm", "hũ tiết kiệm, bàn tay bỏ đồng xu vào hũ"),
-        (r"nhón gót|bắp chân", "người đang nhón gót, góc nhìn ngang dễ thấy bàn chân"),
-        (r"thanh toán|chi tiêu|chi phí", "ví tiền, hóa đơn và vài đồng xu"),
-        (r"một năm|mỗi tháng|mỗi tuần|365 ngày", "lịch để bàn và mũi tên chỉ thời gian"),
+        (r"(?:chia|phân bổ).{0,45}(?:lương|ngân sách|phong bì)|(?:lương|ngân sách).{0,35}(?:chia|phong bì)",
+         "Góc máy chếch từ trên xuống. Nhân vật chia tiền vào các phong bì trên bàn; dùng biểu tượng nhà, khiên và ly cà phê nếu cảnh có đủ ba khoản."),
+        (r"chia.{0,35}(?:phần|tuần)|mỗi phần|500[.,]000",
+         "Góc nhìn từ trên xuống: bàn tay đặt từng phần ngân sách vào các ô tuần trên lịch. Làm nổi bật các phần bằng hình khối lặp lại."),
+        (r"lịch sử (?:giao dịch|thanh toán)|tiền đã đi đâu",
+         "Cận cảnh nhân vật nhìn điện thoại, nét mặt ngạc nhiên. Trên màn hình là vài dòng giao dịch biểu thị bằng hình khối và biểu tượng mua sắm."),
+        (r"quỹ dự phòng|tài khoản riêng|để dành|tiết kiệm|dành dụm",
+         "Góc nhìn ba phần tư. Nhân vật chuyển một phần tiền sang hũ hoặc phong bì riêng có biểu tượng chiếc khiên; làm rõ đường di chuyển của tiền."),
+        (r"nhận lương|lương (?:về|đã về)",
+         "Cảnh trung tại bàn, nhân vật nhìn điện thoại khi lương về. Dùng mũi tên hướng vào ví để thể hiện dòng tiền."),
+        (r"cà phê|ăn vặt|đồ uống",
+         "Cận cảnh bàn tay thanh toán cạnh ly cà phê hoặc món ăn được nhắc đến. Bố trí ví và món mua thành hai điểm nhìn rõ ràng."),
+        (r"nhón gót|bắp chân",
+         "Góc nhìn ngang, lấy rõ từ đầu gối đến bàn chân. Thể hiện tư thế nhón gót và phần bắp chân bằng chuyển động dễ hiểu."),
+        (r"thanh toán|chi tiêu|chi phí",
+         "Góc nhìn chếch qua vai. Nhân vật đối chiếu các khoản chi trên bàn, với hóa đơn và đồng xu được nhóm theo nội dung đang kể."),
+        (r"một năm|mỗi tháng|mỗi tuần|365 ngày|cuối tháng",
+         "Dùng lịch để bàn làm chủ thể. Nhân vật chỉ vào mốc thời gian, dùng các ô lịch và mũi tên để biểu thị khoảng thời gian được nhắc."),
     )
-    visuals = next((art for key, art in rules if re.search(key, text, re.I)), "")
-    direction = (f"Gợi ý hình ảnh trọng tâm: {visuals}. " if visuals else
-                 "Chọn một chủ thể và một hành động cụ thể có trong lời đọc. ")
-    shared_prompt = (shared_prompt or "").strip()
-    style = ("Yêu cầu chung áp dụng cho mọi cảnh:\n" + shared_prompt + "\n"
-             if shared_prompt else
-             "Nền trắng trơn, đường viền đậm rõ, ít chi tiết, chủ thể tách nền, "
-             "màu xanh ngọc và vàng nhạt. Không chữ, số, logo hoặc watermark. ")
-    return (f"Tạo một ảnh minh họa tỷ lệ {ratio} để chuyển thành video vẽ tay. "
-            + style + direction + "Dùng lời đọc sau làm ngữ cảnh, không chép nguyên văn lên ảnh: " + text)
+    scene = next((visual for key, visual in rules if re.search(key, text, re.I)), "")
+    if not scene:
+        scene = ("Chuyển ý chính thành một hành động hoặc quan hệ nhìn thấy được. "
+                 "Đặt chủ thể ở tiền cảnh, chọn bối cảnh phù hợp với hành động và dùng đạo cụ để làm rõ ý.")
+    style = (shared_prompt or "").strip() or (
+        "Nền trắng, nét đậm rõ, ít chi tiết, xanh ngọc và vàng nhạt. "
+        "Không chữ, số, logo hoặc watermark."
+    )
+    return (f"Tạo một ảnh minh họa tỷ lệ {ratio} để chuyển thành video vẽ tay.\n"
+            f"CẢNH CẦN VẼ — {scene}\n"
+            f"PHONG CÁCH — Áp dụng trực tiếp vào nhân vật, đạo cụ, nền và bố cục cảnh trên: {style}\n"
+            f"Ý NGHĨA CẢNH — {text}\n"
+            "Chỉ minh họa nội dung của cảnh này. Không chép nguyên lời đọc lên ảnh. "
+            "Ưu tiên yêu cầu chung nếu gợi ý đạo cụ hoặc góc nhìn xung đột với phong cách đã chọn.")
+
 
 def timecode(frame):
     ms = round(frame * 1000 / 24)
