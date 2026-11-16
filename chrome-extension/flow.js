@@ -168,22 +168,50 @@
         const urls = [...new Set(resultImages(current).map(image => image.currentSrc || image.src))];
         if (urls.length !== 1) return null;
         claimed.add(current);
-        return urls[0];
+        return current;
       }, 175);
       if (!result) throw Error("Không tìm thấy ảnh kết quả của cảnh " + (job.index + 1) + ".");
       results.push({job, result});
       await send({op:"progress", count:results.length});
     }
-    for (const {job, result} of results) {
-      let data;
-      try {
-        const response = await fetch(result);
-        if (!response.ok) throw Error("Không tải được ảnh trên tab.");
-        const blob = await response.blob();
-        if (!blob.type.startsWith("image/") || blob.size > 24*1024*1024) throw Error("Ảnh không hợp lệ.");
-        data = await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(blob);});
-      } catch (error) { if (result.startsWith("blob:")) throw error; }
-      await send({op:"image",job:job.job,index:job.index,url:result,data});
+    for (const {job, result:card} of results) {
+      if (!card.isConnected) throw Error("Thẻ ảnh cảnh " + (job.index + 1) + " đã thay đổi.");
+      const activateControl = async (node, clicks=1) => {
+        node.scrollIntoView({block:"center", inline:"nearest"});
+        const box = node.getBoundingClientRect();
+        const x = box.left + box.width / 2, y = box.top + box.height / 2;
+        if (!node.contains(document.elementFromPoint(x,y))) throw Error("Nút tải ảnh Flow đang bị che.");
+        await send({op:"submit", job:job.job, x, y, clicks});
+      };
+      const tile = resultImages(card)[0];
+      await activateControl(tile, 2);
+      const download = await waitFor(() => matching(/^(Tải nội dung nghe nhìn xuống|Download media|Download)$/iu)[0], 12);
+      if (!download) throw Error("Không thấy nút tải ảnh gốc của cảnh " + (job.index + 1) + ".");
+      await activateControl(download);
+      const option = await waitFor(() => [...document.querySelectorAll('[role="menuitem"],button')]
+        .find(item => visible(item) && /^2K(?:\s|$)/iu.test(caption(item)) && !item.disabled && item.getAttribute("aria-disabled") !== "true"), 8);
+      if (!option) throw Error("Flow không có tùy chọn tải 2K cho cảnh " + (job.index + 1) + ".");
+      await send({op:"arm2k",job:job.job,index:job.index});
+      await activateControl(option);
+      const deadline = Date.now() + 150000;
+      let received = false;
+      while (!received && Date.now() < deadline) {
+        received = (await send({op:"transfer2k",job:job.job,index:job.index})).received;
+        if (!received) await sleep(1000);
+      }
+      if (!received) throw Error("Chrome chưa tải xong ảnh 2K cho cảnh " + (job.index + 1) + ".");
+      if (job.index !== batch.index + batch.prompts.length - 1) {
+        const back = await waitFor(() => matching(/^(Nút quay lại để quay về trang trước|Go back|Back)$/iu)[0], 8);
+        if (!back) throw Error("Không thấy nút trở lại lưới ảnh Flow.");
+        await activateControl(back);
+        await waitFor(() => cards().length > 0, 12);
+        for (const entry of results) {
+          if (entry.result.isConnected) continue;
+          const replacement = newestFirst && initialCards.length === 0 && cards().length === queued.length
+            ? cards()[queued.length - 1 - (entry.job.index - batch.index)] : null;
+          if (replacement) entry.result = replacement;
+        }
+      }
     }
   }
   async function waitFor(find, seconds) {
