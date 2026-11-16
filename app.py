@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.32"
+VERSION = "0.2.33"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -25,6 +25,7 @@ if (ROOT / "ffmpeg.exe").is_file():
     os.environ["FFMPEG_BINARY"] = str(ROOT / "ffmpeg.exe")
 LOCK = threading.Lock()
 LAST_ANALYSIS = {}
+WHISPER_MODEL = None
 VIDEO_SIZES = {
     "9:16": (1080, 1920),
     "16:9": (1920, 1080),
@@ -90,8 +91,10 @@ def duration(path):
 
 def transcribe(voice):
     from faster_whisper import WhisperModel
-    model = WhisperModel("small", device="cpu", compute_type="int8", download_root=str(DATA / "models"))
-    segments, _ = model.transcribe(str(voice), language="vi", vad_filter=True, word_timestamps=True)
+    global WHISPER_MODEL
+    if WHISPER_MODEL is None:
+        WHISPER_MODEL = WhisperModel("small", device="cpu", compute_type="int8", download_root=str(DATA / "models"))
+    segments, _ = WHISPER_MODEL.transcribe(str(voice), language="vi", vad_filter=True, word_timestamps=True)
     return [(float(word.start), float(word.end), word.word)
             for segment in segments for word in (segment.words or ()) if word.word.strip()]
 
@@ -621,17 +624,23 @@ try {
                 else:
                     fingerprint.update((script or "").encode("utf-8"))
                 key = ("voice" if voice else "script", fingerprint.hexdigest())
-                cache = DATA / "last-analysis.wav"
-                if LAST_ANALYSIS.get("key") == key and cache.is_file():
+                cache = LAST_ANALYSIS.get("wav")
+                if LAST_ANALYSIS.get("key") == key and cache is not None and cache.is_file():
                     wav, plan = cache, LAST_ANALYSIS["plan"]
                 else:
                     yield [], None, "Đang chuẩn bị lời đọc…"
                     wav = prepare_audio(script, voice, folder)
                     yield [], None, "Đang nhận dạng lời đọc và chia cảnh…"
                     plan = scenes(transcribe(wav), duration(wav))
-                    os.replace(wav, cache)
-                    wav = cache
-                    LAST_ANALYSIS.update(key=key, plan=plan)
+                    next_cache = DATA / f"analysis-{uuid.uuid4().hex}.wav"
+                    os.replace(wav, next_cache)
+                    wav = next_cache
+                    LAST_ANALYSIS.update(key=key, plan=plan, wav=wav)
+                    if cache is not None:
+                        try:
+                            cache.unlink(missing_ok=True)
+                        except OSError:
+                            pass
                 rows = scene_rows(plan, ratio, highlights, shared_prompt)
                 yield rows, None, f"Sẵn sàng: {len(rows)} cảnh và prompt."
                 if not render:
