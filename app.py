@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.46"
+VERSION = "0.2.47"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -414,7 +414,7 @@ def update():
         return "Đợi video xuất xong trước khi cập nhật."
     restart = False
     try:
-        manifest = json.loads(patch_read(PATCH_ROOT + "main/update.json", 16384))
+        manifest = json.loads(patch_read(PATCH_ROOT + f"main/update.json?t={time.time_ns()}", 16384))
         version = manifest["version"]
         companion = ""
         if (DATA / "chrome-extension" / "manifest.json").is_file():
