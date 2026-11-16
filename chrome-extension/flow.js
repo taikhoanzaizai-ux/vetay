@@ -85,7 +85,14 @@
     const initialCards = cards();
     let newestFirst = true;
     let lastSubmit = 0;
+    function checkFlowBlock() {
+      const notices = [...cards(), ...document.querySelectorAll('[role="alert"],[role="status"]')];
+      if (notices.some(node => visible(node) &&
+          /chúng tôi nhận thấy có hoạt động bất thường|we noticed some unusual activity|we detected unusual activity/i.test(node.innerText || "")))
+        throw Error("Flow báo hoạt động bất thường. Vẽ Tay đã dừng gửi prompt. Hãy kiểm tra Flow trong Chrome trước khi thử lại.");
+    }
     async function submitScene(job) {
+      checkFlowBlock();
       const {prompt} = job;
       const agent = [...document.querySelectorAll('[role="checkbox"],input[type="checkbox"]')].find(node => visible(node)
         && /^(Tác nhân|Agent)$/iu.test((node.getAttribute("aria-label") || node.textContent || "").trim())
@@ -143,6 +150,7 @@
       const y = box.top + box.height / 2;
       if (!submit.contains(document.elementFromPoint(x,y))) throw Error("Nút tạo ảnh đang bị che.");
       await sleep(Math.max(0, 8000 - (Date.now() - lastSubmit)));
+      checkFlowBlock();
       lastSubmit = Date.now();
       await send({op:"submit", job:job.job, x, y});
       const findCard = () => {
@@ -151,7 +159,7 @@
            || normalize(card.textContent).includes(normalize(prompt))));
         return matches.length === 1 ? matches[0] : null;
       };
-      const card = await waitFor(findCard, 20);
+      const card = await waitFor(() => { checkFlowBlock(); return findCard(); }, 20);
       if (!card) throw Error("Flow chưa xác nhận đã nhận prompt cảnh " + (job.index + 1) + ".");
       return {job, card, findCard};
     }
@@ -173,6 +181,7 @@
       for (let attempt = 0; attempt < 3; attempt++) {
         const {card, findCard} = entry;
         const status = await waitFor(() => {
+        checkFlowBlock();
         const grid = cards();
         const replacement = attempt === 0 && newestFirst && initialCards.length === 0 && grid.length === queued.length
           && grid.every(item => resultImages(item).length === 1)
