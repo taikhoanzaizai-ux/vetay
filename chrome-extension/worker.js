@@ -8,6 +8,17 @@ async function api({token, port}, path, body) {
   if (!r.ok) throw Error((await r.text()).slice(0,250));
   return r.json();
 }
+const pendingDownloads = new Map();
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  const pending = [...pendingDownloads.values()].filter(entry => !entry.id && Date.now() < entry.deadline);
+  const fromFlow = [item.referrer, item.url].some(url =>
+    /^https:\/\/flow\.google\.com\/|^blob:https:\/\/flow\.google\.com\//i.test(url || ""));
+  if (!fromFlow || pending.length !== 1) return;
+  const entry = pending[0];
+  const extension = /\.(png|jpe?g|webp)$/i.exec(item.filename || "")?.[1] || "png";
+  entry.id = item.id;
+  suggest({filename:"VeTay-2K/" + entry.stem + "." + extension, conflictAction:"overwrite"});
+});
 chrome.runtime.onMessage.addListener((m,sender,reply) => {
   (async()=>{
     if (!flowTab(sender.tab?.url)) throw Error("Chỉ nhận yêu cầu từ tab Flow.");
@@ -26,10 +37,26 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
     const pairing = typeof saved[key] === "string" ? {token:saved[key],port:7877} : saved[key];
     if (m.op === "resume") return pairing ? api(pairing,"/next") : {done:true};
     if (!pairing) throw Error("Tab chưa được Vẽ Tay kết nối.");
+    if (m.op === "arm2k" || m.op === "transfer2k") {
+      const job = await api(pairing,"/next");
+      if (job.done || job.job !== m.job || job.index !== m.index) throw Error("Tác vụ ảnh 2K đã đổi.");
+      if (m.op === "arm2k") {
+        pendingDownloads.set(key,{stem:job.job + "-" + job.index, deadline:Date.now()+150000});
+        return {armed:true};
+      }
+      const entry = pendingDownloads.get(key);
+      if (!entry?.id) return {received:false};
+      const [item] = await chrome.downloads.search({id:entry.id});
+      if (item?.state === "interrupted") throw Error("Chrome đã ngắt lượt tải ảnh 2K.");
+      if (item?.state !== "complete") return {received:false};
+      const result = await api(pairing,"/download2k/" + job.job + "/" + job.index,JSON.stringify({path:item.filename}));
+      pendingDownloads.delete(key);
+      return result;
+    }
     if (m.op === "submit") {
       const tab = await chrome.tabs.get(sender.tab.id);
       if (!tab.active || sender.frameId !== 0 || new URL(tab.url).origin !== "https://flow.google.com"
-        || !/^\/project\/[^/]+\/?$/.test(new URL(tab.url).pathname)
+        || !/^\/project\/[^/]+(?:\/.*)?$/.test(new URL(tab.url).pathname)
         || ![m.x,m.y].every(Number.isFinite) || m.x < 0 || m.y < 0 || m.x > 10000 || m.y > 10000)
         throw Error("Tab dự án Flow không còn ở trạng thái sẵn sàng.");
       const job = await api(pairing,"/next");
@@ -41,6 +68,12 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
           {type,x:m.x,y:m.y,button:"left",buttons,clickCount:1});
         await input("mousePressed",1);
         await input("mouseReleased",0);
+        if (m.clicks === 2) {
+          const second = (type,buttons) => chrome.debugger.sendCommand(target,"Input.dispatchMouseEvent",
+            {type,x:m.x,y:m.y,button:"left",buttons,clickCount:2});
+          await second("mousePressed",1);
+          await second("mouseReleased",0);
+        }
       } finally {
         await chrome.debugger.detach(target);
       }
