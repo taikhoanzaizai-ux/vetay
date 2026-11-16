@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.44"
+VERSION = "0.2.45"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -654,7 +654,8 @@ try {
         def report(message):
             progress(None, desc=message)
         if not LOCK.acquire(blocking=False):
-            raise gr.Error("Một tác vụ đang chạy.")
+            yield gr.skip(), gr.skip(), "Một tác vụ Vẽ Tay vẫn đang chạy. Đợi tác vụ đó kết thúc rồi thử lại."
+            return
         rows = []
         try:
             save_folder = Path((output_folder or "").strip().strip('"') or DATA).expanduser()
@@ -733,7 +734,6 @@ try {
         yield from run(script, voice, None, None, ratio, highlights, False, shared_prompt=shared_prompt)
 
     def generate_video(script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt, full_resolution):
-        yield gr.skip(), gr.skip(), "Đã nhận lệnh tạo video. Đang chuẩn bị dữ liệu…"
         yield from run(script, voice, pictures, provider, ratio, highlights, True, output_folder, shared_prompt, full_resolution)
 
     css = "body, .gradio-container, button, textarea, input { font-family: 'Segoe UI', Arial, sans-serif !important; }"
@@ -776,7 +776,11 @@ try {
         gr.Button("Chuẩn bị tiện ích Chrome").click(prepare_chrome_bundle, outputs=status)
         gr.Button("Cập nhật qua GitHub").click(update, outputs=status)
         analysis.click(analyze, [script, voice, ratio, highlights, shared_prompt], [table, video, task])
-        generation = generate.click(
+        start_generation = generate.click(
+            fn=lambda: "Đã nhận lệnh tạo video. Đang chờ bắt đầu dựng…",
+            outputs=task, queue=False, show_progress="hidden",
+        )
+        generation = start_generation.success(
             generate_video, [script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt, full_resolution],
             [table, video, task],
         )
