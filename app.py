@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "Data"
-VERSION = "0.2.45"
+VERSION = "0.2.46"
 PATCH_ABI = "vetay-windows-026"
 PATCH_ROOT = "https://raw.githubusercontent.com/taikhoanzaizai-ux/vetay/"
 
@@ -719,9 +719,9 @@ try {
                             shutil.copyfile(dest, copy)
                             os.replace(copy, saved)
                     except OSError as error:
-                        yield rows, path, f"Đã dựng MP4 tại {dest}. Không lưu được sang {save_folder}: {error}"
+                        yield rows, (path, str(dest)), f"Đã dựng MP4 tại {dest}. Không lưu được sang {save_folder}: {error}"
                         return
-                yield rows, path, f"Đã lưu MP4 · {len(rows)} cảnh · {saved}"
+                yield rows, (path, str(saved)), f"Đã lưu MP4 · {len(rows)} cảnh · {saved}"
         except subprocess.CalledProcessError as error:
             detail = (error.stderr or b"").decode("utf-8", errors="replace").strip()
             yield rows, None, "Lỗi xử lý âm thanh hoặc video: " + detail[-1500:]
@@ -734,7 +734,17 @@ try {
         yield from run(script, voice, None, None, ratio, highlights, False, shared_prompt=shared_prompt)
 
     def generate_video(script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt, full_resolution):
-        yield from run(script, voice, pictures, provider, ratio, highlights, True, output_folder, shared_prompt, full_resolution)
+        for rows, result, message in run(
+            script, voice, pictures, provider, ratio, highlights, True, output_folder, shared_prompt, full_resolution
+        ):
+            preview_path, saved_path = result if isinstance(result, tuple) else (None, "")
+            yield rows, preview_path, message, saved_path
+
+    def reveal_video(saved_path):
+        video_file = Path(saved_path or "")
+        if not video_file.is_absolute() or not video_file.is_file() or video_file.suffix.lower() != ".mp4":
+            raise gr.Error("Chưa có tệp MP4 để mở.")
+        subprocess.Popen(["explorer.exe", "/select,", str(video_file)])
 
     css = "body, .gradio-container, button, textarea, input { font-family: 'Segoe UI', Arial, sans-serif !important; }"
     with gr.Blocks(title="Vẽ Tay") as app:
@@ -766,6 +776,11 @@ try {
                              datatype=["number", "str", "str", "number", "str", "str", "str"],
                              label="Bảng phân cảnh theo lời đọc", wrap=True, interactive=False)
         task = gr.Textbox(label="Tiến độ dựng", interactive=False)
+        preview_path = gr.State()
+        with gr.Row():
+            saved_video = gr.Textbox(label="Tệp MP4 đã lưu", interactive=False)
+            show_video = gr.Button("Hiện tệp MP4 trong thư mục")
+        show_video.click(reveal_video, [saved_video], None, queue=False)
         with gr.Row():
             output_folder = gr.Textbox(value=str(DATA), label="Thư mục lưu MP4")
             choose_folder = gr.Button("Chọn thư mục")
@@ -782,9 +797,13 @@ try {
         )
         generation = start_generation.success(
             generate_video, [script, voice, pictures, provider, ratio, highlights, output_folder, shared_prompt, full_resolution],
-            [table, video, task],
+            [table, preview_path, task, saved_video],
+            show_progress="minimal",
         )
-        generation.success(
+        preview = generation.success(
+            fn=lambda path: path, inputs=[preview_path], outputs=[video], queue=False, show_progress="hidden",
+        )
+        preview.success(
             fn=None, inputs=[video], outputs=None, queue=False, show_progress="hidden",
             js="""(video) => {
                 if (video) document.getElementById('vetay-preview')?.scrollIntoView({behavior: 'smooth', block: 'start'});
