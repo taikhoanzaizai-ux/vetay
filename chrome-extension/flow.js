@@ -40,12 +40,17 @@
       .filter(node => visible(node) && !node.disabled && node.getAttribute("aria-disabled") !== "true");
     const labels = node => [caption(node), node.getAttribute("data-value") || "", node.innerText || ""].join(" ");
     const exact = ratioLabel(ratio);
+    const iconName = "crop_" + ratio.replace(":", "_");
+    const matchesRatio = node => exact.test(labels(node)) || [...node.querySelectorAll("mat-icon,[role=img],svg")]
+      .some(icon => [icon.textContent, icon.getAttribute("aria-label"), icon.getAttribute("data-icon")]
+        .some(label => label?.trim() === iconName));
     const hasRatio = ratioLabel("[0-9]+:[0-9]+");
     const trigger = controls().filter(node => /aspect ratio|tỷ lệ|tỉ lệ|crop_(?:landscape|portrait)/iu.test(labels(node))
       || (node.getAttribute("aria-haspopup") && hasRatio.test(labels(node))));
-    const options = () => controls().filter(node => !trigger.includes(node) && exact.test(labels(node)));
+    const options = () => controls().filter(node => !trigger.includes(node) && node !== settings && matchesRatio(node));
     const modelSettings = controls().filter(node => /Nano Banana|Imagen/iu.test(labels(node)) && /[x×][1-4]\b/iu.test(labels(node)));
-    const settings = modelSettings.length === 1 ? modelSettings[0] : controls().find(node => /^(Điều kiện kích hoạt cài đặt|Settings trigger)$/iu.test(caption(node)));
+    const settings = controls().find(node => /^(Điều kiện kích hoạt cài đặt|Settings trigger|Generation settings)$/iu.test(caption(node)))
+      || (modelSettings.length === 1 ? modelSettings[0] : null);
     let opened = false;
     if (!options().length && settings) {
       settings.click();
@@ -58,8 +63,9 @@
     const option = await waitFor(() => {
       if (trigger.length === 1 && exact.test(labels(trigger[0])) && !options().length) return trigger[0];
       const matches = options();
-      return matches.length === 1 ? matches[0] : null;
-    }, 5);
+      const radios = matches.filter(node => ["radio", "option", "menuitemradio"].includes(node.getAttribute("role")));
+      return radios.length === 1 ? radios[0] : matches.length === 1 ? matches[0] : null;
+    }, 12);
     if (!option) throw Error("Không tìm thấy tỷ lệ " + ratio + " trong Google Flow.");
     if (!trigger.includes(option) && !selected(option)) option.click();
     const single = controls().filter(node => /^[x×]\s*1$/iu.test(caption(node)));
@@ -84,6 +90,7 @@
       if (agent) { agent.click(); await sleep(300); }
       let field = await waitFor(promptField, 25);
       if (!field) throw Error("Không xác định được ô prompt duy nhất. Mở trang tạo ảnh trong dự án Flow.");
+      await send({op:"activate"});
       const ratio = /^Tạo một ảnh minh họa tỷ lệ (\d+:\d+) /u.exec(job.prompt)?.[1];
       if (ratio && ratio !== appliedRatio) {
         await selectRatio(ratio);
@@ -91,7 +98,6 @@
         field = await waitFor(promptField, 10);
         if (!field) throw Error("Không thấy ô prompt sau khi chọn tỷ lệ.");
       }
-      await send({op:"activate"});
       if (!await waitFor(() => document.hasFocus() && !document.hidden, 6))
         throw Error("Chrome chưa đưa tab Flow lên trước để gửi prompt.");
       field.focus();
