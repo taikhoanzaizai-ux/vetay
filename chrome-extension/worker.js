@@ -55,10 +55,12 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
     }
     if (m.op === "submit") {
       const tab = await chrome.tabs.get(sender.tab.id);
-      if (!tab.active || sender.frameId !== 0 || new URL(tab.url).origin !== "https://flow.google.com"
-        || !/^\/project\/[^/]+(?:\/.*)?$/.test(new URL(tab.url).pathname)
-        || ![m.x,m.y].every(Number.isFinite) || m.x < 0 || m.y < 0 || m.x > 10000 || m.y > 10000)
-        throw Error("Tab dự án Flow không còn ở trạng thái sẵn sàng.");
+      const page = new URL(tab.url);
+      if (sender.frameId !== 0 || page.origin !== "https://flow.google.com"
+        || !/^\/project\/[^/]+(?:\/.*)?$/.test(page.pathname))
+        throw Error("Lệnh bấm không đến từ màn dự án hoặc màn xem ảnh Flow.");
+      if (![m.x,m.y].every(Number.isFinite) || m.x < 0 || m.y < 0 || m.x > 10000 || m.y > 10000)
+        throw Error("Nút Flow nằm ngoài vùng có thể bấm.");
       const job = await api(pairing,"/next");
       if (job.done || job.job !== m.job) throw Error("Tác vụ Vẽ Tay đã đổi.");
       const target = {tabId:tab.id};
