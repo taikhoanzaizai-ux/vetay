@@ -11,10 +11,16 @@ async function api({token, port}, path, body) {
 const pendingDownloads = new Map();
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   const pending = [...pendingDownloads.values()].filter(entry => !entry.id && Date.now() < entry.deadline);
-  const fromFlow = [item.referrer, item.url].some(url =>
-    /^https:\/\/flow\.google\.com\/|^blob:https:\/\/flow\.google\.com\//i.test(url || ""));
-  if (!fromFlow || pending.length !== 1) return;
+  if (pending.length !== 1) return;
   const entry = pending[0];
+  const urls = [item.url, item.finalUrl].filter(Boolean);
+  const isImage = /^image\/(?:png|jpeg|webp)$/i.test(item.mime || "")
+    || /\.(png|jpe?g|webp)$/i.test(item.filename || "");
+  const fromFlow = item.referrer === entry.page
+    || urls.some(url => /^blob:https:\/\/flow\.google\.com\//i.test(url))
+    || (isImage && !item.referrer && urls.some(url =>
+      /^https:\/\/(?:[a-z0-9-]+\.)*(?:googleusercontent\.com|gstatic\.com)\//i.test(url)));
+  if (!fromFlow) return;
   const extension = /\.(png|jpe?g|webp)$/i.exec(item.filename || "")?.[1] || "png";
   entry.id = item.id;
   suggest({filename:"VeTay-2K/" + entry.stem + "." + extension, conflictAction:"overwrite"});
@@ -41,7 +47,7 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
       const job = await api(pairing,"/next");
       if (job.done || job.job !== m.job || job.index !== m.index) throw Error("Tác vụ ảnh 2K đã đổi.");
       if (m.op === "arm2k") {
-        pendingDownloads.set(key,{stem:job.job + "-" + job.index, deadline:Date.now()+150000});
+        pendingDownloads.set(key,{stem:job.job + "-" + job.index, deadline:Date.now()+150000,page:sender.tab.url});
         return {armed:true};
       }
       const entry = pendingDownloads.get(key);
