@@ -1,7 +1,7 @@
 const base = "http://127.0.0.1:7877";
 function flowTab(url) { return /^https:\/\/(flow\.google\.com|labs\.google)\//.test(url || ""); }
-async function api(token, path, body) {
-  const r = await fetch(base + path, {
+async function api({token, port}, path, body) {
+  const r = await fetch("http://127.0.0.1:" + port + path, {
     headers: {"X-VeTay-Token":token, ...(body ? {"Content-Type":body.type || "application/json"} : {})},
     method: body ? "POST" : "GET", body
   });
@@ -14,13 +14,16 @@ chrome.runtime.onMessage.addListener((m,sender,reply) => {
     const key = "pairing:" + sender.tab.id;
     if (m.op === "pair") {
       if (!/^[a-f0-9]{32}$/.test(m.token || "")) throw Error("Mã kết nối không hợp lệ.");
-      const job = await api(m.token, "/next");
+      const port = m.port ?? 7877;
+      if (!Number.isInteger(port) || port < 1024 || port > 65535) throw Error("Cổng Vẽ Tay không hợp lệ.");
+      const connection = {token:m.token, port};
+      const job = await api(connection, "/next");
       if (job.done) throw Error("Vẽ Tay chưa có cảnh chờ.");
-      await chrome.storage.session.set({[key]:m.token});
+      await chrome.storage.session.set({[key]:connection});
       return job;
     }
     const saved = await chrome.storage.session.get(key);
-    const pairing = saved[key];
+    const pairing = typeof saved[key] === "string" ? {token:saved[key],port:7877} : saved[key];
     if (m.op === "resume") return pairing ? api(pairing,"/next") : {done:true};
     if (!pairing) throw Error("Tab chưa được Vẽ Tay kết nối.");
     if (m.op === "submit") {
